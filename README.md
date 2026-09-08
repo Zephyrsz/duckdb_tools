@@ -41,6 +41,8 @@ npm run dev
 ./start.sh stop
 ```
 
+前后端共享配置位于 `config/workbench.env`，其中可统一设置监听地址、后端端口、前端端口、DuckDB 数据目录和 RDS Agent metadata 路径。启动脚本和 Vite 开发服务器都会读取它；启动前导出的同名环境变量优先级更高。也可通过 `DUCKDB_TOOLS_CONFIG=/path/to/workbench.env` 指定另一份配置文件。
+
 脚本在 `.run/` 保存 PID，在 `logs/` 保存前后端日志。可通过 `DUCKDB_TOOLS_HOST`、`DUCKDB_TOOLS_BACKEND_PORT` 和 `DUCKDB_TOOLS_FRONTEND_PORT` 覆盖监听地址与端口。
 
 ## 单服务部署

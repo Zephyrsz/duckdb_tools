@@ -3,6 +3,26 @@
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${DUCKDB_TOOLS_CONFIG:-$ROOT_DIR/config/workbench.env}"
+_cfg_host="${DUCKDB_TOOLS_HOST-}"
+_cfg_backend_port="${DUCKDB_TOOLS_BACKEND_PORT-}"
+_cfg_frontend_port="${DUCKDB_TOOLS_FRONTEND_PORT-}"
+_cfg_data="${DUCKDB_TOOLS_DATA-}"
+_cfg_rds_root="${RDS_AGENT_ROOT-}"
+_cfg_metadata="${RDS_AGENT_METADATA_DB-}"
+if [[ -f "$CONFIG_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+  set +a
+fi
+[[ -n "$_cfg_host" ]] && DUCKDB_TOOLS_HOST="$_cfg_host"
+[[ -n "$_cfg_backend_port" ]] && DUCKDB_TOOLS_BACKEND_PORT="$_cfg_backend_port"
+[[ -n "$_cfg_frontend_port" ]] && DUCKDB_TOOLS_FRONTEND_PORT="$_cfg_frontend_port"
+[[ -n "$_cfg_data" ]] && DUCKDB_TOOLS_DATA="$_cfg_data"
+[[ -n "$_cfg_rds_root" ]] && RDS_AGENT_ROOT="$_cfg_rds_root"
+[[ -n "$_cfg_metadata" ]] && RDS_AGENT_METADATA_DB="$_cfg_metadata"
+unset _cfg_host _cfg_backend_port _cfg_frontend_port _cfg_data _cfg_rds_root _cfg_metadata
 RUN_DIR="${DUCKDB_TOOLS_RUN_DIR:-$ROOT_DIR/.run}"
 LOG_DIR="${DUCKDB_TOOLS_LOG_DIR:-$ROOT_DIR/logs}"
 HOST="${DUCKDB_TOOLS_HOST:-0.0.0.0}"
@@ -30,6 +50,7 @@ usage() {
   DUCKDB_TOOLS_FRONTEND_PORT  前端端口，默认 5173
   DUCKDB_TOOLS_RUN_DIR        PID 文件目录，默认 .run
   DUCKDB_TOOLS_LOG_DIR        日志目录，默认 logs
+  DUCKDB_TOOLS_CONFIG         统一配置文件，默认 config/workbench.env
 EOF
 }
 

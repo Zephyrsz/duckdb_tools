@@ -10,3 +10,4 @@ data/uploads/*
 .run/
 logs/
 .DS_Store
+config/*.local.env
