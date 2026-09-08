@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/components/datagrid.tsx","./src/components/icon.tsx","./src/components/importpanel.tsx","./src/components/sidebar.tsx","./src/components/sqlworkspace.tsx","./src/components/tablebrowser.tsx","./src/components/topbar.tsx"],"version":"5.9.3"}

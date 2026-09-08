@@ -1,0 +1,69 @@
+import {
+  Activity,
+  ArrowUpRight,
+  BookOpen,
+  Bot,
+  BarChart3,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  CircleHelp,
+  Database,
+  FileSpreadsheet,
+  FileText,
+  FolderOpen,
+  GitBranch,
+  HardDrive,
+  History,
+  Layers3,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Play,
+  RefreshCw,
+  Search,
+  ScanSearch,
+  Tag,
+  Table2,
+  Upload,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
+const icons: Record<string, LucideIcon> = {
+  activity: Activity,
+  arrowUpRight: ArrowUpRight,
+  barChart: BarChart3,
+  check: Check,
+  chevronDown: ChevronDown,
+  chevronRight: ChevronRight,
+  alert: CircleAlert,
+  help: CircleHelp,
+  database: Database,
+  excel: FileSpreadsheet,
+  file: FileText,
+  folder: FolderOpen,
+  drive: HardDrive,
+  closeSidebar: PanelLeftClose,
+  openSidebar: PanelLeftOpen,
+  play: Play,
+  refresh: RefreshCw,
+  search: Search,
+  table: Table2,
+  upload: Upload,
+  x: X,
+  scan: ScanSearch,
+  catalog: BookOpen,
+  dataset: Layers3,
+  annotation: Tag,
+  history: History,
+  agent: Bot,
+  lineage: GitBranch,
+};
+
+type Props = { name: keyof typeof icons; size?: number; strokeWidth?: number; className?: string };
+
+export function Icon({ name, size = 16, strokeWidth = 1.8, className }: Props) {
+  const Component = icons[name];
+  return <Component size={size} strokeWidth={strokeWidth} className={className} aria-hidden="true" />;
+}
