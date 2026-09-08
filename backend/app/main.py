@@ -14,11 +14,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .semantic import SemanticRepository, build_drafts, profile_database
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RDS_AGENT_ROOT = Path(__import__("os").environ.get("RDS_AGENT_ROOT", PROJECT_ROOT.parent / "rds_agent"))
 DATA_DIR = Path(__import__("os").environ.get("DUCKDB_TOOLS_DATA", PROJECT_ROOT / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "workspace.duckdb"
+METADATA_DB_PATH = Path(__import__("os").environ.get("RDS_AGENT_METADATA_DB", RDS_AGENT_ROOT / "var" / "metadata.db"))
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PREVIEW_ROWS = 5
 TABLE_ROWS = 100
@@ -52,14 +56,37 @@ class QueryRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=100_000)
 
 
+class SemanticDraftPatch(BaseModel):
+    canonical_name: str | None = Field(default=None, min_length=1, max_length=96)
+    display_name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=500)
+    expression: str | None = Field(default=None, max_length=2_000)
+    status: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 def ensure_storage() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    SemanticRepository(METADATA_DB_PATH)
 
 
 def connect_db() -> duckdb.DuckDBPyConnection:
     ensure_storage()
     return duckdb.connect(str(DB_PATH))
+
+
+def semantic_repository() -> SemanticRepository:
+    ensure_storage()
+    return SemanticRepository(METADATA_DB_PATH)
+
+
+def semantic_profiles() -> dict[str, dict[str, Any]]:
+    connection = connect_db()
+    try:
+        return {profile["name"]: profile for profile in profile_database(connection)}
+    finally:
+        connection.close()
 
 
 def json_value(value: Any) -> Any:
@@ -290,6 +317,62 @@ def run_query(request: QueryRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"查询失败：{error}") from error
     finally:
         connection.close()
+
+
+@app.get("/api/semantic/summary")
+def semantic_summary() -> dict[str, Any]:
+    return semantic_repository().summary()
+
+
+@app.get("/api/semantic/tables")
+def semantic_tables() -> list[dict[str, Any]]:
+    profiles = list(semantic_profiles().values())
+    return semantic_repository().tables([{"name": profile["name"], "row_count": profile["row_count"]} for profile in profiles])
+
+
+@app.get("/api/semantic/tables/{table_name}")
+def semantic_table(table_name: str) -> dict[str, Any]:
+    if not TABLE_NAME_PATTERN.fullmatch(table_name):
+        raise HTTPException(status_code=400, detail="表名无效")
+    profile = semantic_profiles().get(table_name)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="数据表不存在")
+    return semantic_repository().table(table_name, profile)
+
+
+@app.post("/api/semantic/scan")
+def scan_semantic() -> dict[str, Any]:
+    connection = connect_db()
+    try:
+        profiles = profile_database(connection)
+    finally:
+        connection.close()
+    drafts = semantic_repository().replace_drafts(build_drafts(profiles))
+    return {"table_count": len(profiles), "draft_count": len(drafts), "drafts": drafts}
+
+
+@app.patch("/api/semantic/drafts/{draft_id}")
+def update_semantic_draft(draft_id: int, request: SemanticDraftPatch) -> dict[str, Any]:
+    try:
+        result = semantic_repository().update_draft(draft_id, request.model_dump(exclude_none=True))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if result is None:
+        raise HTTPException(status_code=404, detail="语义草稿不存在")
+    return result
+
+
+@app.post("/api/semantic/validate")
+def validate_semantic() -> dict[str, Any]:
+    return semantic_repository().validate(semantic_profiles())
+
+
+@app.post("/api/semantic/publish")
+def publish_semantic() -> dict[str, Any]:
+    try:
+        return semantic_repository().publish(semantic_profiles())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 ensure_storage()

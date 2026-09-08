@@ -54,6 +54,14 @@ cd frontend && npm install && npm run build && cd ..
 
 浏览器访问 `http://<服务器地址>:8000`。数据库默认保存在 `data/workspace.duckdb`，上传文件保存在 `data/uploads`。可通过 `DUCKDB_TOOLS_DATA` 指定数据目录。
 
+语义层运行时 metadata 默认直接写入相邻 `rds_agent/var/metadata.db`，与 RDS Agent 共用同一个 SQLite 文件。可通过 `RDS_AGENT_ROOT` 指定 RDS Agent 项目目录，或用 `RDS_AGENT_METADATA_DB` 指定 SQLite 文件路径。导入数据后进入“语义层”，执行扫描、确认候选、校验并发布；RDS Agent 使用同一个 `metadata_db_path` 和 `db_path` 即可读取发布结果：
+
+```bash
+export RDS_AGENT_METADATA_DB=/Users/rgwei/pj/pj_data/rds_agent/var/metadata.db
+```
+
+完整生命周期见 [`docs/guides/semantic-integration.md`](docs/guides/semantic-integration.md)。
+
 ## 测试
 
 ```bash

@@ -1,7 +1,7 @@
 import type { TableSummary } from "../types";
 import { Icon } from "./Icon";
 
-export type WorkspaceMode = "import" | "browse" | "query";
+export type WorkspaceMode = "import" | "browse" | "query" | "semantic" | "semanticTable";
 
 type Props = {
   databaseName: string;
@@ -28,10 +28,8 @@ const workspaceModules: ModuleItem[] = [
 ];
 
 const semanticModules: ModuleItem[] = [
-  { id: "catalog", label: "数据目录", icon: "catalog", status: "规划中" },
-  { id: "dataset", label: "数据集详情", icon: "dataset", status: "规划中" },
-  { id: "annotation", label: "字段标注", icon: "annotation", status: "规划中" },
-  { id: "history", label: "扫描历史", icon: "history", status: "规划中" },
+  { id: "catalog", label: "语义目录", icon: "catalog", mode: "semantic" },
+  { id: "annotation", label: "字段标注", icon: "annotation", mode: "semanticTable" },
 ];
 
 const exchangeModules: ModuleItem[] = [

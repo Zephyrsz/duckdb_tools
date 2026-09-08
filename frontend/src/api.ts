@@ -4,6 +4,12 @@ import type {
   PreviewPayload,
   QueryResult,
   TableInfo,
+  SemanticDraft,
+  SemanticPublish,
+  SemanticSummary,
+  SemanticTable,
+  SemanticTableSummary,
+  SemanticValidation,
 } from "./types";
 
 const API_ROOT = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
@@ -49,4 +55,36 @@ export function runQuery(sql: string): Promise<QueryResult> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sql }),
   });
+}
+
+export function getSemanticSummary(): Promise<SemanticSummary> {
+  return request<SemanticSummary>("/semantic/summary");
+}
+
+export function getSemanticTables(): Promise<SemanticTableSummary[]> {
+  return request<SemanticTableSummary[]>("/semantic/tables");
+}
+
+export function getSemanticTable(tableName: string): Promise<SemanticTable> {
+  return request<SemanticTable>(`/semantic/tables/${encodeURIComponent(tableName)}`);
+}
+
+export function scanSemantic(): Promise<{ table_count: number; draft_count: number; drafts: SemanticDraft[] }> {
+  return request("/semantic/scan", { method: "POST" });
+}
+
+export function updateSemanticDraft(id: number, patch: Partial<Pick<SemanticDraft, "canonical_name" | "display_name" | "description" | "expression" | "status" | "confidence">>): Promise<SemanticDraft> {
+  return request<SemanticDraft>(`/semantic/drafts/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export function validateSemantic(): Promise<SemanticValidation> {
+  return request<SemanticValidation>("/semantic/validate", { method: "POST" });
+}
+
+export function publishSemantic(): Promise<SemanticPublish> {
+  return request<SemanticPublish>("/semantic/publish", { method: "POST" });
 }
