@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RDS_AGENT_ROOT = Path(__import__("os").environ.get("RDS_AGENT_ROOT", PROJECT_ROOT.parent / "rds_agent"))
 DATA_DIR = Path(__import__("os").environ.get("DUCKDB_TOOLS_DATA", PROJECT_ROOT / "data"))
 UPLOAD_DIR = DATA_DIR / "uploads"
-DB_PATH = DATA_DIR / "workspace.duckdb"
+DB_PATH = Path(__import__("os").environ.get("DUCKDB_TOOLS_DATABASE", DATA_DIR / "workspace.duckdb"))
 METADATA_DB_PATH = Path(__import__("os").environ.get("RDS_AGENT_METADATA_DB", RDS_AGENT_ROOT / "var" / "metadata.db"))
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PREVIEW_ROWS = 5
@@ -68,12 +68,19 @@ class SemanticDraftPatch(BaseModel):
 def ensure_storage() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    resolve_database_path().parent.mkdir(parents=True, exist_ok=True)
     SemanticRepository(METADATA_DB_PATH)
+
+
+def resolve_database_path() -> Path:
+    """Return the configured DuckDB file, preserving the test/runtime override."""
+    configured = __import__("os").environ.get("DUCKDB_TOOLS_DATABASE")
+    return Path(configured) if configured else DB_PATH
 
 
 def connect_db() -> duckdb.DuckDBPyConnection:
     ensure_storage()
-    return duckdb.connect(str(DB_PATH))
+    return duckdb.connect(str(resolve_database_path()))
 
 
 def semantic_repository() -> SemanticRepository:

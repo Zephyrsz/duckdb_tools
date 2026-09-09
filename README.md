@@ -41,7 +41,7 @@ npm run dev
 ./start.sh stop
 ```
 
-前后端共享配置位于 `config/workbench.env`，其中可统一设置监听地址、后端端口、前端端口、DuckDB 数据目录和 RDS Agent metadata 路径。启动脚本和 Vite 开发服务器都会读取它；启动前导出的同名环境变量优先级更高。也可通过 `DUCKDB_TOOLS_CONFIG=/path/to/workbench.env` 指定另一份配置文件。
+前后端共享配置位于 `config/workbench.env`，其中可统一设置监听地址、后端端口、前端端口、DuckDB 数据目录、DuckDB 数据库文件和 RDS Agent metadata 路径。启动脚本和 Vite 开发服务器都会读取它；启动前导出的同名环境变量优先级更高。也可通过 `DUCKDB_TOOLS_CONFIG=/path/to/workbench.env` 指定另一份配置文件。
 
 脚本在 `.run/` 保存 PID，在 `logs/` 保存前后端日志。可通过 `DUCKDB_TOOLS_HOST`、`DUCKDB_TOOLS_BACKEND_PORT` 和 `DUCKDB_TOOLS_FRONTEND_PORT` 覆盖监听地址与端口。
 
@@ -54,7 +54,7 @@ cd frontend && npm install && npm run build && cd ..
 .venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
 ```
 
-浏览器访问 `http://<服务器地址>:8000`。数据库默认保存在 `data/workspace.duckdb`，上传文件保存在 `data/uploads`。可通过 `DUCKDB_TOOLS_DATA` 指定数据目录。
+浏览器访问 `http://<服务器地址>:8000`。数据库默认保存在 `data/workspace.duckdb`，上传文件保存在 `data/uploads`。可通过 `DUCKDB_TOOLS_DATA` 指定数据目录，也可通过 `DUCKDB_TOOLS_DATABASE` 直接指定 DuckDB 文件路径；后者优先级更高。
 
 语义层运行时 metadata 默认直接写入相邻 `rds_agent/var/metadata.db`，与 RDS Agent 共用同一个 SQLite 文件。可通过 `RDS_AGENT_ROOT` 指定 RDS Agent 项目目录，或用 `RDS_AGENT_METADATA_DB` 指定 SQLite 文件路径。导入数据后进入“语义层”，执行扫描、确认候选、校验并发布；RDS Agent 使用同一个 `metadata_db_path` 和 `db_path` 即可读取发布结果：
 

@@ -100,3 +100,11 @@ def test_query_allows_one_trailing_semicolon(client):
 
     assert response.status_code == 200
     assert response.json()["rows"] == [{"value": 1}]
+
+
+def test_configured_duckdb_database_path_is_used(monkeypatch, tmp_path):
+    configured = tmp_path / "custom" / "semantic.duckdb"
+    monkeypatch.setenv("DUCKDB_TOOLS_DATABASE", str(configured))
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path / "data")
+
+    assert main.resolve_database_path() == configured
