@@ -8,8 +8,11 @@ _cfg_host="${DUCKDB_TOOLS_HOST-}"
 _cfg_backend_port="${DUCKDB_TOOLS_BACKEND_PORT-}"
 _cfg_frontend_port="${DUCKDB_TOOLS_FRONTEND_PORT-}"
 _cfg_data="${DUCKDB_TOOLS_DATA-}"
+_cfg_database="${DUCKDB_TOOLS_DATABASE-}"
 _cfg_rds_root="${RDS_AGENT_ROOT-}"
 _cfg_metadata="${RDS_AGENT_METADATA_DB-}"
+_cfg_rds_db="${RDS_DB_PATH-}"
+_cfg_rds_metadata="${RDS_METADATA_DB_PATH-}"
 if [[ -f "$CONFIG_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
@@ -20,9 +23,12 @@ fi
 [[ -n "$_cfg_backend_port" ]] && DUCKDB_TOOLS_BACKEND_PORT="$_cfg_backend_port"
 [[ -n "$_cfg_frontend_port" ]] && DUCKDB_TOOLS_FRONTEND_PORT="$_cfg_frontend_port"
 [[ -n "$_cfg_data" ]] && DUCKDB_TOOLS_DATA="$_cfg_data"
+[[ -n "$_cfg_database" ]] && DUCKDB_TOOLS_DATABASE="$_cfg_database"
 [[ -n "$_cfg_rds_root" ]] && RDS_AGENT_ROOT="$_cfg_rds_root"
 [[ -n "$_cfg_metadata" ]] && RDS_AGENT_METADATA_DB="$_cfg_metadata"
-unset _cfg_host _cfg_backend_port _cfg_frontend_port _cfg_data _cfg_rds_root _cfg_metadata
+[[ -n "$_cfg_rds_db" ]] && RDS_DB_PATH="$_cfg_rds_db"
+[[ -n "$_cfg_rds_metadata" ]] && RDS_METADATA_DB_PATH="$_cfg_rds_metadata"
+unset _cfg_host _cfg_backend_port _cfg_frontend_port _cfg_data _cfg_database _cfg_rds_root _cfg_metadata _cfg_rds_db _cfg_rds_metadata
 RUN_DIR="${DUCKDB_TOOLS_RUN_DIR:-$ROOT_DIR/.run}"
 LOG_DIR="${DUCKDB_TOOLS_LOG_DIR:-$ROOT_DIR/logs}"
 HOST="${DUCKDB_TOOLS_HOST:-0.0.0.0}"
@@ -51,6 +57,8 @@ usage() {
   DUCKDB_TOOLS_RUN_DIR        PID 文件目录，默认 .run
   DUCKDB_TOOLS_LOG_DIR        日志目录，默认 logs
   DUCKDB_TOOLS_CONFIG         统一配置文件，默认 config/workbench.env
+  RDS_DB_PATH                 RDS Agent 只读使用的共享 DuckDB 文件
+  RDS_METADATA_DB_PATH        RDS Agent 使用的共享 SQLite metadata 文件
 EOF
 }
 
