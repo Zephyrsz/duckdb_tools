@@ -64,6 +64,8 @@ export RDS_AGENT_METADATA_DB=/Users/rgwei/pj/pj_data/rds_agent/var/metadata.db
 
 完整生命周期见 [`docs/guides/semantic-integration.md`](docs/guides/semantic-integration.md)。
 
+完整部署、启动、验证和故障排查见 [`docs/guides/deployment.md`](docs/guides/deployment.md)。
+
 ## 测试
 
 ```bash
