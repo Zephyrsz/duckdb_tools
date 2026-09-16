@@ -2,6 +2,8 @@
 
 本文描述 `duckdb_tools`、`rds_agent` 和 DeepSeek Harness 的本地部署方式。
 
+AWS Oregon 远程部署使用同一套共享运行时配置和统一入口，具体服务拓扑、启动顺序及故障排查见本文末尾的[远程部署](#aws-oregon-远程部署)章节。完整的三服务运维入口是 `/app/rds_agent/start.sh`。
+
 ## 架构与职责
 
 ```text
@@ -142,3 +144,75 @@ Harness 在前台运行时使用 `Ctrl-C` 停止。
 - 端口占用：运行 `./start.sh status`，或修改 `DUCKDB_TOOLS_BACKEND_PORT` / `DUCKDB_TOOLS_FRONTEND_PORT`。
 - Harness 没有 `query_data`：确认 patch 参数顺序、`RDS_AGENT_ROOT`、Python 虚拟环境和模型 key。
 - 不要让 RDS Agent 使用 `:memory:` 或相对路径作为生产共享配置。
+
+## AWS Oregon 远程部署
+
+远程服务器上的目录和运行时文件如下：
+
+| 项目 | 路径或端口 |
+| --- | --- |
+| RDS Agent | `/app/rds_agent` |
+| DuckDB Tools | `/app/duckdb_tools` |
+| DeepSeek Harness | `/app/deepseek-harness` |
+| Python | `/home/ubuntu/venv_314/bin/python` |
+| 共享 DuckDB | `/app/rds_agent/data/workspace.duckdb` |
+| 共享 SQLite metadata | `/app/rds_agent/data/metadata.db` |
+| DuckDB Tools API | `0.0.0.0:8001` |
+| DuckDB Tools 前端 | `0.0.0.0:5175` |
+| Harness | `127.0.0.1:8091` |
+
+统一配置在 `/app/rds_agent/config/remote-stack.env`。其中 `DUCKDB_TOOLS_DATABASE` 和 `RDS_DB_PATH` 必须指向同一个 DuckDB 文件，`RDS_AGENT_METADATA_DB` 和 `RDS_METADATA_DB_PATH` 必须指向同一个 SQLite 文件。DeepSeek key 放在未纳入 Git 的 `/app/rds_agent/config/remote-secrets.env`，权限设置为 `600`。
+
+### 服务职责
+
+- DuckDB Tools 是唯一的数据写入方，负责 CSV/XLSX 导入、业务数据修改、语义草稿编辑和 SQLite metadata 发布。
+- RDS Agent 通过只读连接消费共享 DuckDB 和 SQLite metadata，并执行受 SQLGuard 约束的查询。
+- DeepSeek Harness 监听本机 `8091`，通过 MCP stdio 子进程调用 RDS Agent 的 `query_data`。
+
+### 启动顺序
+
+从 `/app/rds_agent` 执行 `./start.sh start` 时按以下顺序启动：
+
+1. `remote-service.sh` 创建或打开共享 DuckDB，启动 FastAPI API `8001`。
+2. 等待 API 健康检查通过后启动 Vite 前端 `5175`。
+3. 检查共享 DuckDB 和 SQLite metadata 文件存在。
+4. 启动 DeepSeek Harness `8091`，加载 RDS Agent 的 MCP overlay。
+5. Harness 按需启动 RDS Agent MCP 子进程；每次查询结束后关闭只读 DuckDB 连接，避免长期文件锁。
+
+停止时顺序相反：先停止 Harness，再停止前端和 API。`restart` 执行完整的停止和启动流程。
+
+### 统一管理命令
+
+```bash
+cd /app/rds_agent
+./start.sh setup    # 首次安装 Python/npm 依赖
+./start.sh start
+./start.sh status
+./start.sh logs
+./start.sh restart
+./start.sh stop
+```
+
+`/app/rds_agent/remote-stack.sh` 是编排实现；`/app/duckdb_tools/remote-service.sh` 只管理 DuckDB Tools 的后端和前端。日志分别位于：
+
+```text
+/app/duckdb_tools/logs/remote/backend.log
+/app/duckdb_tools/logs/remote/frontend.log
+/app/rds_agent/logs/remote/harness.log
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8001/api/health
+curl -I http://127.0.0.1:5175/
+curl -I http://127.0.0.1:8091/
+```
+
+Harness 未携带访问 token 时返回 `401` 是正常现象。需要从本地访问 Harness 时，可使用 SSH 隧道：
+
+```bash
+ssh -L 8091:127.0.0.1:8091 ubuntu@<server>
+```
+
+业务导入和 Agent 查询应避免同时操作同一个 DuckDB 文件；发生锁冲突时等待当前查询结束后重试导入或发布。
