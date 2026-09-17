@@ -159,7 +159,7 @@ Harness 在前台运行时使用 `Ctrl-C` 停止。
 | 共享 SQLite metadata | `/app/rds_agent/data/metadata.db` |
 | DuckDB Tools API | `0.0.0.0:8001` |
 | DuckDB Tools 前端 | `0.0.0.0:5175` |
-| Harness | `127.0.0.1:8091` |
+| Harness | `127.0.0.1:3090` |
 
 统一配置在 `/app/rds_agent/config/remote-stack.env`。其中 `DUCKDB_TOOLS_DATABASE` 和 `RDS_DB_PATH` 必须指向同一个 DuckDB 文件，`RDS_AGENT_METADATA_DB` 和 `RDS_METADATA_DB_PATH` 必须指向同一个 SQLite 文件。DeepSeek key 放在未纳入 Git 的 `/app/rds_agent/config/remote-secrets.env`，权限设置为 `600`。
 
@@ -167,7 +167,7 @@ Harness 在前台运行时使用 `Ctrl-C` 停止。
 
 - DuckDB Tools 是唯一的数据写入方，负责 CSV/XLSX 导入、业务数据修改、语义草稿编辑和 SQLite metadata 发布。
 - RDS Agent 通过只读连接消费共享 DuckDB 和 SQLite metadata，并执行受 SQLGuard 约束的查询。
-- DeepSeek Harness 监听本机 `8091`，通过 MCP stdio 子进程调用 RDS Agent 的 `query_data`。
+- DeepSeek Harness 监听本机 `3090`，通过 MCP stdio 子进程调用 RDS Agent 的 `query_data`。
 
 ### 启动顺序
 
@@ -176,7 +176,7 @@ Harness 在前台运行时使用 `Ctrl-C` 停止。
 1. `remote-service.sh` 创建或打开共享 DuckDB，启动 FastAPI API `8001`。
 2. 等待 API 健康检查通过后启动 Vite 前端 `5175`。
 3. 检查共享 DuckDB 和 SQLite metadata 文件存在。
-4. 启动 DeepSeek Harness `8091`，加载 RDS Agent 的 MCP overlay。
+4. 启动 DeepSeek Harness `3090`，加载 RDS Agent 的 MCP overlay。
 5. Harness 按需启动 RDS Agent MCP 子进程；每次查询结束后关闭只读 DuckDB 连接，避免长期文件锁。
 
 停止时顺序相反：先停止 Harness，再停止前端和 API。`restart` 执行完整的停止和启动流程。
@@ -206,13 +206,13 @@ cd /app/rds_agent
 ```bash
 curl http://127.0.0.1:8001/api/health
 curl -I http://127.0.0.1:5175/
-curl -I http://127.0.0.1:8091/
+curl -I http://127.0.0.1:3090/
 ```
 
 Harness 未携带访问 token 时返回 `401` 是正常现象。需要从本地访问 Harness 时，可使用 SSH 隧道：
 
 ```bash
-ssh -L 8091:127.0.0.1:8091 ubuntu@<server>
+ssh -L 3090:127.0.0.1:3090 ubuntu@<server>
 ```
 
 业务导入和 Agent 查询应避免同时操作同一个 DuckDB 文件；发生锁冲突时等待当前查询结束后重试导入或发布。
