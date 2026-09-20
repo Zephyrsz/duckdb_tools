@@ -215,7 +215,7 @@ Harness 未携带访问 token 时返回 `401` 是正常现象。需要从本地�
 ssh -L 3090:127.0.0.1:3090 ubuntu@<server>
 ```
 
-公网页面可以继续用于日常使用；模型提供方和其他持久化设置需要从回环地址打开。仓库内提供了本地代理脚本，它会建立本机 `127.0.0.1:3091` 到远程 Harness `127.0.0.1:3090` 的隧道，并显示当前 token：
+未应用测试补丁时，公网页面的模型提供方和其他持久化设置需要从回环地址打开。仓库内提供了本地代理脚本，它会建立本机 `127.0.0.1:3091` 到远程 Harness `127.0.0.1:3090` 的隧道，并显示当前 token：
 
 ```bash
 chmod +x scripts/harness-local-proxy.sh
@@ -229,5 +229,7 @@ scripts/harness-local-proxy.sh stop
 ```
 
 可用环境变量覆盖默认值：`HARNESS_SSH_KEY`、`HARNESS_SSH_USER`、`HARNESS_SSH_HOST`、`HARNESS_LOCAL_PORT` 和 `HARNESS_REMOTE_PORT`。该代理只监听本机，不改变远程服务或公网 Nginx 配置。
+
+测试环境可以使用 `config/harness-public-settings-current.patch` 开启公网页面的 Host-backed 设置持久化。当前远程测试服务器已应用该补丁，并同步修改了 `packages/client/ui-settings/lib/` 的运行时 bundle。该补丁只适配当前部署版本，应用前应备份 Harness 源码和构建产物；生产环境应使用域名、HTTPS 和反向代理认证，并保留回环限制。
 
 业务导入和 Agent 查询应避免同时操作同一个 DuckDB 文件；发生锁冲突时等待当前查询结束后重试导入或发布。
