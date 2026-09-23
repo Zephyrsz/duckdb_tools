@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { connectDuckDB, disconnectDuckDB, getDatabase, getDuckDBStatus, getSemanticSummary, getSemanticTable, getSemanticTables, getTable, importFile, previewUpload, publishSemantic, runQuery, scanSemantic, updateSemanticDraft, validateSemantic } from "./api";
+import { connectDuckDB, disconnectDuckDB, getDatabase, getDatabaseSchemas, getDuckDBStatus, getSemanticSummary, getSemanticTable, getSemanticTables, getTable, importFile, previewUpload, publishSemantic, runQuery, scanSemantic, updateSemanticDraft, validateSemantic } from "./api";
 import type { DatabaseInfo, DuckDBStatus, ImportResult, PreviewPayload, QueryResult, SemanticDraft, SemanticSummary, SemanticTable, SemanticTableSummary, SemanticValidation, TableInfo } from "./types";
 import { Icon } from "./components/Icon";
 import { Sidebar } from "./components/Sidebar";
@@ -14,9 +14,14 @@ type Mode = "import" | "browse" | "query" | "semantic" | "semanticTable";
 type ImportStage = "select" | "preview" | "importing" | "complete";
 
 const starterSql = "SELECT 1 AS sample_value";
+const DEFAULT_DATABASE_NAME = "db";
 
 function defaultTableName(filename: string) {
   return filename.replace(/\.(csv|xlsx|xls)$/i, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^([^a-z_])/, "table_$1").replace(/_+/g, "_").replace(/^_+|_+$/g, "") || "imported_data";
+}
+
+function sqlTableReference(tableRef: string) {
+  return tableRef.split(".").map((part) => `"${part.replace(/"/g, '""')}"`).join(".");
 }
 
 export default function App() {
@@ -31,6 +36,8 @@ export default function App() {
   const [importStage, setImportStage] = useState<ImportStage>("select");
   const [importBusy, setImportBusy] = useState(false);
   const [tableName, setTableName] = useState("");
+  const [databaseName, setDatabaseName] = useState(DEFAULT_DATABASE_NAME);
+  const [databaseSchemas, setDatabaseSchemas] = useState<string[]>([DEFAULT_DATABASE_NAME]);
   const [importError, setImportError] = useState<string | null>(null);
   const [sql, setSql] = useState(starterSql);
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
@@ -52,9 +59,10 @@ export default function App() {
   const refreshDatabase = useCallback(async () => {
     try {
       setGlobalError(null);
-      const [nextDatabase, nextStatus] = await Promise.all([getDatabase(), getDuckDBStatus()]);
+      const [nextDatabase, nextStatus, nextSchemas] = await Promise.all([getDatabase(), getDuckDBStatus(), getDatabaseSchemas()]);
       setDatabase(nextDatabase);
       setDuckdbStatus(nextStatus);
+      setDatabaseSchemas(nextSchemas);
     } catch (error) {
       setGlobalError(error instanceof Error ? error.message : "无法连接数据服务");
       try { setDuckdbStatus(await getDuckDBStatus()); } catch { /* backend unavailable */ }
@@ -131,16 +139,16 @@ export default function App() {
     finally { setSemanticBusy(false); }
   };
 
-  const loadTable = useCallback(async (name: string) => {
-    setActiveTable(name);
+  const loadTable = useCallback(async (tableRef: string) => {
+    setActiveTable(tableRef);
     setMode("browse");
     setSidebarOpen(false);
     setTableLoading(true);
     setTableError(null);
     try {
-      const nextTable = await getTable(name);
+      const nextTable = await getTable(tableRef);
       setTable(nextTable);
-      setSql(`SELECT *\nFROM "${name}"\nLIMIT 100`);
+      setSql(`SELECT *\nFROM ${sqlTableReference(tableRef)}\nLIMIT 100`);
     } catch (error) {
       setTableError(error instanceof Error ? error.message : "无法读取数据表");
     } finally {
@@ -173,14 +181,14 @@ export default function App() {
     setImportBusy(true);
     setImportStage("importing");
     try {
-      const result = await importFile({ stored_path: preview.stored_path, table_name: tableName.trim(), has_header: true });
+      const result = await importFile({ stored_path: preview.stored_path, database_name: databaseName.trim(), table_name: tableName.trim(), has_header: true });
       setImportResult(result);
-      setActiveTable(result.table_name);
+      setActiveTable(result.table_ref);
       setImportStage("complete");
       await refreshDatabase();
-      const nextTable = await getTable(result.table_name);
+      const nextTable = await getTable(result.table_ref);
       setTable(nextTable);
-      setSql(`SELECT *\nFROM "${result.table_name}"\nLIMIT 100`);
+      setSql(`SELECT *\nFROM ${sqlTableReference(result.table_ref)}\nLIMIT 100`);
     } catch (error) {
       setImportError(error instanceof Error ? error.message : "导入失败");
       setImportStage("preview");
@@ -221,9 +229,9 @@ export default function App() {
 
   return <div className="app-shell">
     <div className={`sidebar-backdrop ${sidebarOpen ? "is-visible" : ""}`} onClick={() => setSidebarOpen(false)} />
-    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={(nextMode) => { setMode(nextMode); setSidebarOpen(false); }} onSelectTable={loadTable} onImport={startUpload} duckdbConnected={duckdbStatus.connected} /></div>
+    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={(nextMode) => { setMode(nextMode); setSidebarOpen(false); }} onSelectTable={loadTable} onImport={startUpload} duckdbStatus={duckdbStatus} duckdbBusy={duckdbBusy} onConnect={() => void handleDuckDBConnection("connect")} onDisconnect={() => void handleDuckDBConnection("disconnect")} /></div>
     <main className="workspace">
-      <Topbar mode={mode} onModeChange={setMode} tableName={activeTable} tableCount={database.tables.length} onUpload={startUpload} onToggleSidebar={() => setSidebarOpen((open) => !open)} duckdbStatus={duckdbStatus} duckdbBusy={duckdbBusy} onConnect={() => void handleDuckDBConnection("connect")} onDisconnect={() => void handleDuckDBConnection("disconnect")} />
+      <Topbar mode={mode} onModeChange={setMode} tableName={activeTable} tableCount={database.tables.length} onUpload={startUpload} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
       <input ref={fileInputRef} id="upload-input" type="file" accept=".csv,.xlsx" className="visually-hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void beginPreview(file); event.target.value = ""; }} />
       {!mode.startsWith("semantic") && <div className="mode-tabs" role="tablist" aria-label="工作区视图">
         <button className={mode === "import" ? "is-active" : ""} onClick={() => setMode("import")} role="tab" aria-selected={mode === "import"}><Icon name="upload" size={14} /> 导入数据</button>
@@ -232,7 +240,7 @@ export default function App() {
       </div>}
       <div className="content-area">
         {globalError && <div className="connection-banner"><Icon name="alert" size={16} /><span>{globalError}</span><button type="button" onClick={() => void refreshDatabase()}><Icon name="refresh" size={14} /> 重试</button></div>}
-        {mode === "import" && <ImportPanel stage={importStage} preview={preview} result={importResult} tableName={tableName} onTableNameChange={setTableName} onImport={() => void handleImport()} onChoose={startUpload} isBusy={importBusy} error={importError} />}
+        {mode === "import" && <ImportPanel stage={importStage} preview={preview} result={importResult} databaseName={databaseName} databaseOptions={databaseSchemas} onDatabaseNameChange={setDatabaseName} tableName={tableName} onTableNameChange={setTableName} onImport={() => void handleImport()} onChoose={startUpload} isBusy={importBusy} error={importError} />}
         {mode === "browse" && <TableBrowser table={table} isLoading={tableLoading} error={tableError} onQuery={() => setMode("query")} />}
         {mode === "query" && <SqlWorkspace sql={sql} onSqlChange={setSql} onRun={() => void executeQuery()} isLoading={queryBusy} result={queryResult} error={queryError} tablesCount={database.tables.length} />}
         {mode === "semantic" && <SemanticOverview summary={semanticSummary} tables={semanticTables} validation={semanticValidation} isLoading={semanticLoading} isBusy={semanticBusy} error={semanticError} onScan={() => void handleScan()} onValidate={() => void handleValidate()} onPublish={() => void handlePublish()} onSelectTable={(name) => void loadSemanticTable(name)} />}

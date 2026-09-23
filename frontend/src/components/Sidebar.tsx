@@ -1,4 +1,4 @@
-import type { TableSummary } from "../types";
+import type { DuckDBStatus, TableSummary } from "../types";
 import { Icon } from "./Icon";
 
 export type WorkspaceMode = "import" | "browse" | "query" | "semantic" | "semanticTable";
@@ -11,7 +11,10 @@ type Props = {
   onModeChange: (mode: WorkspaceMode) => void;
   onSelectTable: (name: string) => void;
   onImport: () => void;
-  duckdbConnected: boolean;
+  duckdbStatus: DuckDBStatus;
+  duckdbBusy: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
 };
 
 type ModuleItem = {
@@ -67,7 +70,7 @@ function ModuleNav({ label, items, mode, onModeChange }: { label: string; items:
   );
 }
 
-export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange, onSelectTable, onImport, duckdbConnected }: Props) {
+export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange, onSelectTable, onImport, duckdbStatus, duckdbBusy, onConnect, onDisconnect }: Props) {
   return (
     <aside className="sidebar">
       <div className="brand-lockup">
@@ -90,7 +93,10 @@ export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange,
           <strong>{databaseName}</strong>
           <span>本地 DuckDB 数据集</span>
         </div>
-        <span className={`status-dot ${duckdbConnected ? "" : "is-disconnected"}`} title={duckdbConnected ? "连接正常" : "未连接 DuckDB"} />
+        <div className="dataset-actions">
+          <span className={`status-dot ${duckdbStatus.connected ? "" : "is-disconnected"}`} title={duckdbStatus.connected ? "连接正常" : "未连接 DuckDB"} />
+          {duckdbStatus.connected ? <button type="button" className="dataset-control" onClick={onDisconnect} disabled={duckdbBusy || duckdbStatus.active_operations > 0} title={duckdbStatus.active_operations > 0 ? `有 ${duckdbStatus.active_operations} 个操作正在运行` : "断开 DuckDB"}><Icon name="close" size={13} /></button> : <button type="button" className="dataset-control" onClick={onConnect} disabled={duckdbBusy} title="连接 DuckDB"><Icon name="plug" size={13} /></button>}
+        </div>
       </div>
 
       <div className="table-heading">
@@ -107,9 +113,9 @@ export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange,
           tables.map((table) => (
             <button
               type="button"
-              className={`table-nav-item ${activeTable === table.name ? "is-active" : ""}`}
+              className={`table-nav-item ${activeTable === (table.table_ref ?? table.name) ? "is-active" : ""}`}
               key={table.name}
-              onClick={() => onSelectTable(table.name)}
+              onClick={() => onSelectTable(table.table_ref ?? table.name)}
             >
               <Icon name="table" size={15} />
               <span className="table-nav-name">{table.name}</span>

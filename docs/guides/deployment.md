@@ -195,6 +195,14 @@ cd /app/rds_agent
 
 `/app/rds_agent/remote-stack.sh` 是编排实现；`/app/duckdb_tools/remote-service.sh` 只管理 DuckDB Tools 的后端和前端。日志分别位于：
 
+只需要更新或重启 DuckDB Tools 时，在 `/app/duckdb_tools` 执行：
+
+```bash
+./restart-duckdb-tools.sh
+```
+
+该脚本默认执行 `remote-service.sh restart`，只重启 DuckDB Tools 的 API 和前端，不会触碰 RDS Agent、DeepSeek Harness 或 Nginx。也支持 `start`、`stop`、`status` 参数。
+
 ```text
 /app/duckdb_tools/logs/remote/backend.log
 /app/duckdb_tools/logs/remote/frontend.log

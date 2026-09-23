@@ -12,7 +12,7 @@ import duckdb
 
 
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-QUALIFIED_REFERENCE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
+QUALIFIED_REFERENCE = re.compile(r"\b((?:[A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
 UNSAFE_EXPRESSION = re.compile(
     r"(;|--|/\*|\*/|\b(INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|COPY|ATTACH|DETACH|INSTALL|LOAD|EXPORT|PRAGMA|VACUUM|CALL)\b|\b(read_csv|read_json|read_parquet|parquet_scan|glob|httpfs)\b)",
     re.IGNORECASE,
@@ -25,6 +25,13 @@ def quote_identifier(value: str) -> str:
     if not SAFE_IDENTIFIER.fullmatch(value):
         raise ValueError(f"unsafe identifier: {value}")
     return f'"{value}"'
+
+
+def quote_table_reference(value: str) -> str:
+    parts = value.split(".")
+    if len(parts) not in {1, 2}:
+        raise ValueError(f"unsafe table reference: {value}")
+    return ".".join(quote_identifier(part) for part in parts)
 
 
 def json_value(value: Any) -> Any:
@@ -335,17 +342,28 @@ class SemanticRepository:
 
 def profile_database(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
-    table_names = [str(row[0]) for row in connection.execute("SHOW TABLES").fetchall()]
-    for table_name in table_names:
+    table_entries = connection.execute(
+        """
+        SELECT table_schema, table_name
+        FROM information_schema.tables
+        WHERE table_type = 'BASE TABLE'
+          AND table_schema NOT IN ('information_schema', 'pg_catalog')
+        ORDER BY table_schema, table_name
+        """
+    ).fetchall()
+    for schema_name, raw_table_name in table_entries:
+        schema_name, raw_table_name = str(schema_name), str(raw_table_name)
+        table_name = raw_table_name if schema_name in {"main", "db"} else f"{schema_name}.{raw_table_name}"
+        qualified_table = quote_table_reference(f"{schema_name}.{raw_table_name}")
         columns: list[dict[str, Any]] = []
-        for row in connection.execute(f"DESCRIBE {quote_identifier(table_name)}").fetchall():
+        for row in connection.execute(f"DESCRIBE {qualified_table}").fetchall():
             name, type_name = str(row[0]), str(row[1])
-            null_count = int(connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)} WHERE {quote_identifier(name)} IS NULL").fetchone()[0])
-            distinct_count = int(connection.execute(f"SELECT COUNT(DISTINCT {quote_identifier(name)}) FROM {quote_identifier(table_name)}").fetchone()[0])
-            samples = [json_value(item[0]) for item in connection.execute(f"SELECT DISTINCT {quote_identifier(name)} FROM {quote_identifier(table_name)} WHERE {quote_identifier(name)} IS NOT NULL LIMIT 5").fetchall()]
-            row_count = int(connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}").fetchone()[0])
+            null_count = int(connection.execute(f"SELECT COUNT(*) FROM {qualified_table} WHERE {quote_identifier(name)} IS NULL").fetchone()[0])
+            distinct_count = int(connection.execute(f"SELECT COUNT(DISTINCT {quote_identifier(name)}) FROM {qualified_table}").fetchone()[0])
+            samples = [json_value(item[0]) for item in connection.execute(f"SELECT DISTINCT {quote_identifier(name)} FROM {qualified_table} WHERE {quote_identifier(name)} IS NOT NULL LIMIT 5").fetchall()]
+            row_count = int(connection.execute(f"SELECT COUNT(*) FROM {qualified_table}").fetchone()[0])
             columns.append({"name": name, "type": type_name, "null_count": null_count, "distinct_count": distinct_count, "sample_values": samples, "row_count": row_count, "description": ""})
-        profiles.append({"name": table_name, "row_count": int(connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}").fetchone()[0]), "columns": columns})
+        profiles.append({"name": table_name, "database_name": schema_name, "raw_name": raw_table_name, "row_count": int(connection.execute(f"SELECT COUNT(*) FROM {qualified_table}").fetchone()[0]), "columns": columns})
     return profiles
 
 
@@ -369,4 +387,3 @@ def build_drafts(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 drafts.append({**base, "object_type": "dimension", "canonical_name": name, "confidence": 0.86, "evidence": f"categorical type with {column['distinct_count']} distinct values"})
             drafts.append({**base, "object_type": "column", "canonical_name": f"{table}_{name}", "confidence": 1.0, "evidence": "DESCRIBE column metadata"})
     return drafts
-

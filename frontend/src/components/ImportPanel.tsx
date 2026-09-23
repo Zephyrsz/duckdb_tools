@@ -9,6 +9,9 @@ type Props = {
   preview: PreviewPayload | null;
   result: ImportResult | null;
   tableName: string;
+  databaseName: string;
+  databaseOptions: string[];
+  onDatabaseNameChange: (value: string) => void;
   onTableNameChange: (value: string) => void;
   onImport: () => void;
   onChoose: () => void;
@@ -23,9 +26,12 @@ const stages: { id: Stage; number: string; label: string }[] = [
   { id: "complete", number: "04", label: "完成" },
 ];
 
-export function ImportPanel({ stage, preview, result, tableName, onTableNameChange, onImport, onChoose, isBusy, error }: Props) {
+const NEW_DATABASE_VALUE = "__new_database__";
+
+export function ImportPanel({ stage, preview, result, tableName, databaseName, databaseOptions, onDatabaseNameChange, onTableNameChange, onImport, onChoose, isBusy, error }: Props) {
   const activeIndex = stages.findIndex((item) => item.id === stage);
   const fileLabel = useMemo(() => preview?.filename ?? "CSV 或 Excel 文件", [preview]);
+  const selectingNewDatabase = !databaseOptions.includes(databaseName);
   return (
     <section className="surface-panel import-panel" aria-labelledby="import-title">
       <div className="panel-heading import-heading">
@@ -66,16 +72,28 @@ export function ImportPanel({ stage, preview, result, tableName, onTableNameChan
 
           {preview && stage !== "complete" && <>
             <div className="import-options">
-              <label className="field-label" htmlFor="table-name">目标表名<span>必填</span></label>
-              <div className="table-name-input"><span className="input-prefix">db /</span><input id="table-name" value={tableName} onChange={(event) => onTableNameChange(event.target.value)} disabled={isBusy} /><span className="input-suffix">table</span></div>
-              <p className="field-help">将作为 DuckDB 中的数据表名称，支持字母、数字和下划线。</p>
+              <div className="table-target-grid">
+                <div>
+                  <label className="field-label" htmlFor="database-name">数据库名<span>可新建</span></label>
+                  <select id="database-name" className="database-select" value={selectingNewDatabase ? NEW_DATABASE_VALUE : databaseName} onChange={(event) => onDatabaseNameChange(event.target.value === NEW_DATABASE_VALUE ? "" : event.target.value)} disabled={isBusy}>
+                    {databaseOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                    <option value={NEW_DATABASE_VALUE}>新建数据库…</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="table-name">目标表名<span>必填</span></label>
+                  <div className="table-name-input"><input id="table-name" value={tableName} onChange={(event) => onTableNameChange(event.target.value)} disabled={isBusy} /><span className="input-suffix">table</span></div>
+                </div>
+              </div>
+              {selectingNewDatabase && <input className="database-custom-input" autoFocus value={databaseName} onChange={(event) => onDatabaseNameChange(event.target.value)} disabled={isBusy} aria-label="新建数据库名" placeholder="输入新数据库名" />}
+              <p className="field-help">数据库不存在时会自动创建；数据库名和表名支持字母、数字和下划线。</p>
             </div>
             <div className="preview-head"><div><span className="field-label">前 5 行预览</span><span className="preview-caption">字段类型已自动推断</span></div><span className="header-chip"><Icon name="check" size={12} /> 首行为表头</span></div>
             <DataGrid columns={preview.columns} rows={preview.preview} />
-            <div className="import-actions"><button type="button" className="primary-button" disabled={isBusy || !tableName.trim()} onClick={onImport}>{isBusy ? <><Icon name="refresh" size={15} className="spin" /> 正在写入…</> : <>确认并导入 <Icon name="arrowUpRight" size={15} /></>}</button><span className="action-note">导入后可在左侧数据表中查看</span></div>
+            <div className="import-actions"><button type="button" className="primary-button" disabled={isBusy || !databaseName.trim() || !tableName.trim()} onClick={onImport}>{isBusy ? <><Icon name="refresh" size={15} className="spin" /> 正在写入…</> : <>确认并导入 <Icon name="arrowUpRight" size={15} /></>}</button><span className="action-note">导入后可在左侧数据表中查看</span></div>
           </>}
 
-          {stage === "complete" && result && <div className="complete-state"><div className="complete-icon"><Icon name="check" size={24} /></div><div><div className="complete-title">数据表已准备好</div><p>已将 {result.row_count.toLocaleString()} 行写入 <strong>{result.table_name}</strong>，现在可以浏览数据或运行 SQL。</p></div></div>}
+          {stage === "complete" && result && <div className="complete-state"><div className="complete-icon"><Icon name="check" size={24} /></div><div><div className="complete-title">数据表已准备好</div><p>已将 {result.row_count.toLocaleString()} 行写入 <strong>{result.database_name} / {result.table_name}</strong>，现在可以浏览数据或运行 SQL。</p></div></div>}
         </div>
       )}
       {error && <div className="error-banner"><Icon name="alert" size={16} /><span>{error}</span></div>}

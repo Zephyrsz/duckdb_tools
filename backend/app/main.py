@@ -28,8 +28,10 @@ METADATA_DB_PATH = Path(__import__("os").environ.get("RDS_AGENT_METADATA_DB", RD
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PREVIEW_ROWS = 5
 TABLE_ROWS = 100
+DEFAULT_DATABASE_NAME = "db"
 ALLOWED_EXTENSIONS = {".csv": "csv", ".xlsx": "excel"}
 TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TABLE_REFERENCE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
 READ_ONLY_KEYWORDS = {"SELECT", "WITH", "DESCRIBE", "SHOW", "EXPLAIN"}
 FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|COPY|ATTACH|DETACH|INSTALL|LOAD|EXPORT|PRAGMA|VACUUM|CALL)\b",
@@ -50,6 +52,7 @@ app.add_middleware(
 
 class ImportRequest(BaseModel):
     stored_path: str
+    database_name: str = Field(default=DEFAULT_DATABASE_NAME, min_length=1, max_length=96)
     table_name: str = Field(min_length=1, max_length=96)
     has_header: bool = True
 
@@ -73,6 +76,9 @@ def ensure_storage() -> None:
     resolve_database_path().parent.mkdir(parents=True, exist_ok=True)
     SemanticRepository(METADATA_DB_PATH)
     duckdb_manager.initialize()
+    if duckdb_manager.status()["connected"]:
+        with duckdb_manager.operation() as connection:
+            prepare_database(connection)
 
 
 def resolve_database_path() -> Path:
@@ -87,6 +93,11 @@ duckdb_manager = DuckDBConnectionManager(resolve_database_path)
 def connect_db() -> duckdb.DuckDBPyConnection:
     ensure_storage()
     return duckdb_manager.lease()  # type: ignore[return-value]
+
+
+def prepare_database(connection: duckdb.DuckDBPyConnection) -> None:
+    connection.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(DEFAULT_DATABASE_NAME)}")
+    connection.execute("SET search_path = 'db,main'")
 
 
 def semantic_repository() -> SemanticRepository:
@@ -230,8 +241,57 @@ def quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def table_columns(connection: duckdb.DuckDBPyConnection, table_name: str) -> list[dict[str, str]]:
-    rows = connection.execute(f"DESCRIBE {quote_identifier(table_name)}").fetchall()
+def quote_table_reference(database_name: str, table_name: str) -> str:
+    return f"{quote_identifier(database_name)}.{quote_identifier(table_name)}"
+
+
+def parse_table_reference(table_ref: str) -> tuple[str | None, str]:
+    parts = table_ref.split(".")
+    if len(parts) == 1:
+        return None, parts[0]
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    raise HTTPException(status_code=400, detail="表引用格式无效")
+
+
+def table_catalog(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT table_schema, table_name
+        FROM information_schema.tables
+        WHERE table_type = 'BASE TABLE'
+          AND table_schema NOT IN ('information_schema', 'pg_catalog')
+        ORDER BY table_schema, table_name
+        """
+    ).fetchall()
+    catalog = []
+    for database_name, table_name in rows:
+        database_name, table_name = str(database_name), str(table_name)
+        reference = f"{database_name}.{table_name}"
+        count = connection.execute(f"SELECT COUNT(*) FROM {quote_table_reference(database_name, table_name)}").fetchone()[0]
+        catalog.append({"name": table_name, "database_name": database_name, "table_ref": reference, "row_count": count})
+    return catalog
+
+
+def resolve_table_reference(connection: duckdb.DuckDBPyConnection, table_ref: str) -> tuple[str, str]:
+    database_name, table_name = parse_table_reference(table_ref)
+    if not TABLE_NAME_PATTERN.fullmatch(table_name) or (database_name and not TABLE_NAME_PATTERN.fullmatch(database_name)):
+        raise HTTPException(status_code=400, detail="表引用只能包含字母、数字和下划线")
+    catalog = table_catalog(connection)
+    if database_name:
+        matches = [item for item in catalog if item["database_name"] == database_name and item["name"] == table_name]
+    else:
+        preferred = [DEFAULT_DATABASE_NAME, "main"]
+        matches = [item for item in catalog if item["name"] == table_name]
+        matches.sort(key=lambda item: preferred.index(item["database_name"]) if item["database_name"] in preferred else len(preferred))
+    if not matches:
+        raise duckdb.CatalogException(f"Table {table_ref} does not exist")
+    return str(matches[0]["database_name"]), str(matches[0]["name"])
+
+
+def table_columns(connection: duckdb.DuckDBPyConnection, table_name: str, database_name: str | None = None) -> list[dict[str, str]]:
+    table_expression = quote_table_reference(database_name, table_name) if database_name else quote_identifier(table_name)
+    rows = connection.execute(f"DESCRIBE {table_expression}").fetchall()
     return [{"name": str(row[0]), "type": str(row[1])} for row in rows]
 
 
@@ -256,7 +316,10 @@ def duckdb_status() -> dict[str, object]:
 @app.post("/api/duckdb/connect")
 def duckdb_connect() -> dict[str, object]:
     try:
-        return duckdb_manager.connect()
+        status = duckdb_manager.connect()
+        with duckdb_manager.operation() as connection:
+            prepare_database(connection)
+        return status
     except DuckDBBusyError as error:
         raise database_busy(error) from error
 
@@ -267,6 +330,26 @@ def duckdb_disconnect() -> dict[str, object]:
         return duckdb_manager.disconnect()
     except DuckDBBusyError as error:
         raise database_busy(error) from error
+
+
+@app.get("/api/database/schemas")
+def database_schemas() -> list[str]:
+    try:
+        with duckdb_manager.operation() as connection:
+            rows = connection.execute(
+                """
+                SELECT schema_name
+                FROM information_schema.schemata
+                WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+                ORDER BY schema_name
+                """
+            ).fetchall()
+            names = [str(row[0]) for row in rows]
+            if DEFAULT_DATABASE_NAME not in names:
+                names.append(DEFAULT_DATABASE_NAME)
+            return sorted(set(names))
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
 
 
 @app.post("/api/upload/preview")
@@ -290,8 +373,11 @@ async def upload_preview(file: UploadFile = File(...)) -> dict[str, Any]:
 @app.post("/api/import")
 def import_file(request: ImportRequest) -> dict[str, Any]:
     path = safe_upload_path(request.stored_path)
+    database_name = request.database_name.strip()
+    if not TABLE_NAME_PATTERN.fullmatch(database_name):
+        raise HTTPException(status_code=400, detail="数据库名只能包含字母、数字和下划线，且不能以数字开头")
     table_name = request.table_name.strip()
-    quoted_table = quote_identifier(table_name)
+    quoted_table = quote_table_reference(database_name, table_name)
     kind = ALLOWED_EXTENSIONS.get(path.suffix.lower())
     if not kind:
         raise HTTPException(status_code=400, detail="上传文件格式无效")
@@ -299,6 +385,7 @@ def import_file(request: ImportRequest) -> dict[str, Any]:
         with duckdb_manager.operation() as connection:
             connection.execute("BEGIN")
             try:
+                connection.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(database_name)}")
                 if kind == "csv":
                     connection.execute(
                         f"CREATE OR REPLACE TABLE {quoted_table} AS SELECT * FROM read_csv_auto(?, header = ?)",
@@ -317,7 +404,7 @@ def import_file(request: ImportRequest) -> dict[str, Any]:
                 connection.execute("ROLLBACK")
                 raise
             row_count = connection.execute(f"SELECT COUNT(*) FROM {quoted_table}").fetchone()[0]
-            return {"table_name": table_name, "row_count": row_count, "columns": table_columns(connection, table_name)}
+            return {"database_name": database_name, "table_name": table_name, "table_ref": f"{database_name}.{table_name}", "row_count": row_count, "columns": table_columns(connection, table_name, database_name)}
     except DuckDBNotConnectedError as error:
         raise database_not_connected(error) from error
     except HTTPException:
@@ -330,25 +417,23 @@ def import_file(request: ImportRequest) -> dict[str, Any]:
 def database_info() -> dict[str, Any]:
     try:
         with duckdb_manager.operation() as connection:
-            table_names = [str(row[0]) for row in connection.execute("SHOW TABLES").fetchall()]
-            tables = []
-            for name in table_names:
-                count = connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(name)}").fetchone()[0]
-                tables.append({"name": name, "row_count": count})
+            tables = table_catalog(connection)
             return {"database": resolve_database_path().name, "tables": tables}
     except DuckDBNotConnectedError as error:
         raise database_not_connected(error) from error
 
 
-@app.get("/api/tables/{table_name}")
-def table_info(table_name: str) -> dict[str, Any]:
+@app.get("/api/tables/{table_ref:path}")
+def table_info(table_ref: str) -> dict[str, Any]:
     try:
         with duckdb_manager.operation() as connection:
-            columns = table_columns(connection, table_name)
-            result = connection.execute(f"SELECT * FROM {quote_identifier(table_name)} LIMIT {TABLE_ROWS}")
+            database_name, table_name = resolve_table_reference(connection, table_ref)
+            qualified_table = quote_table_reference(database_name, table_name)
+            columns = table_columns(connection, table_name, database_name)
+            result = connection.execute(f"SELECT * FROM {qualified_table} LIMIT {TABLE_ROWS}")
             rows = rows_as_dicts(result.description, result.fetchall())
-            row_count = connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}").fetchone()[0]
-            return {"table_name": table_name, "columns": columns, "rows": rows, "row_count": row_count}
+            row_count = connection.execute(f"SELECT COUNT(*) FROM {qualified_table}").fetchone()[0]
+            return {"database_name": database_name, "table_name": table_name, "table_ref": f"{database_name}.{table_name}", "columns": columns, "rows": rows, "row_count": row_count}
     except duckdb.CatalogException as error:
         raise HTTPException(status_code=404, detail="数据表不存在") from error
     except DuckDBNotConnectedError as error:
@@ -402,7 +487,7 @@ def semantic_tables() -> list[dict[str, Any]]:
 
 @app.get("/api/semantic/tables/{table_name}")
 def semantic_table(table_name: str) -> dict[str, Any]:
-    if not TABLE_NAME_PATTERN.fullmatch(table_name):
+    if not TABLE_REFERENCE_PATTERN.fullmatch(table_name):
         raise HTTPException(status_code=400, detail="表名无效")
     try:
         profile = semantic_profiles().get(table_name)

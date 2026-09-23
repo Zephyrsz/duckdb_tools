@@ -88,6 +88,41 @@ def test_import_list_table_browse_and_select_query(client):
     assert "elapsed_ms" in query.json()
 
 
+def test_import_can_create_named_database_schema_and_browse_it(client):
+    preview = client.post(
+        "/api/upload/preview",
+        files={"file": ("orders.csv", "id,total\n1,42\n", "text/csv")},
+    ).json()
+
+    imported = client.post(
+        "/api/import",
+        json={
+            "stored_path": preview["stored_path"],
+            "database_name": "analytics",
+            "table_name": "orders",
+            "has_header": True,
+        },
+    )
+    assert imported.status_code == 200
+    assert imported.json()["table_ref"] == "analytics.orders"
+
+    schemas = client.get("/api/database/schemas")
+    assert schemas.status_code == 200
+    assert {"db", "analytics"}.issubset(set(schemas.json()))
+
+    database = client.get("/api/database")
+    assert any(item["table_ref"] == "analytics.orders" for item in database.json()["tables"])
+
+    table = client.get("/api/tables/analytics.orders")
+    assert table.status_code == 200
+    assert table.json()["database_name"] == "analytics"
+    assert table.json()["rows"] == [{"id": 1, "total": 42}]
+
+    scan = client.post("/api/semantic/scan")
+    assert scan.status_code == 200
+    assert any(item["table_name"] == "analytics.orders" for item in scan.json()["drafts"])
+
+
 def test_query_rejects_mutation_and_multiple_statements(client):
     for sql in ["DROP TABLE sales", "SELECT 1; SELECT 2", "UPDATE sales SET amount = 0"]:
         response = client.post("/api/query", json={"sql": sql})

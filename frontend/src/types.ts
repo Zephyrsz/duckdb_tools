@@ -1,8 +1,10 @@
 export type ColumnMeta = { name: string; type: string };
 
-export type TableSummary = { name: string; row_count: number };
+export type TableSummary = { name: string; database_name?: string; table_ref?: string; row_count: number };
 
 export type DatabaseInfo = { database: string; tables: TableSummary[] };
+
+export type DatabaseSchema = string;
 
 export type DuckDBStatus = {
   connected: boolean;
@@ -21,7 +23,9 @@ export type PreviewPayload = {
 };
 
 export type ImportResult = {
+  database_name: string;
   table_name: string;
+  table_ref: string;
   row_count: number;
   columns: ColumnMeta[];
 };

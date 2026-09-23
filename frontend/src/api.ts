@@ -1,5 +1,6 @@
 import type {
   DatabaseInfo,
+  DatabaseSchema,
   ImportResult,
   PreviewPayload,
   QueryResult,
@@ -28,6 +29,10 @@ export function getDatabase(): Promise<DatabaseInfo> {
   return request<DatabaseInfo>("/database");
 }
 
+export function getDatabaseSchemas(): Promise<DatabaseSchema[]> {
+  return request<DatabaseSchema[]>("/database/schemas");
+}
+
 export function getDuckDBStatus(): Promise<DuckDBStatus> {
   return request<DuckDBStatus>("/duckdb/status");
 }
@@ -48,6 +53,7 @@ export function previewUpload(file: File): Promise<PreviewPayload> {
 
 export function importFile(payload: {
   stored_path: string;
+  database_name: string;
   table_name: string;
   has_header: boolean;
 }): Promise<ImportResult> {
@@ -58,8 +64,8 @@ export function importFile(payload: {
   });
 }
 
-export function getTable(tableName: string): Promise<TableInfo> {
-  return request<TableInfo>(`/tables/${encodeURIComponent(tableName)}`);
+export function getTable(tableRef: string): Promise<TableInfo> {
+  return request<TableInfo>(`/tables/${encodeURIComponent(tableRef)}`);
 }
 
 export function runQuery(sql: string): Promise<QueryResult> {
