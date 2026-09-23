@@ -108,3 +108,47 @@ def test_configured_duckdb_database_path_is_used(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "DATA_DIR", tmp_path / "data")
 
     assert main.resolve_database_path() == configured
+
+
+def test_duckdb_connection_can_be_connected_and_disconnected(client):
+    status = client.get("/api/duckdb/status")
+    assert status.status_code == 200
+    assert status.json()["connected"] is True
+    assert status.json()["active_operations"] == 0
+
+    disconnected = client.post("/api/duckdb/disconnect")
+    assert disconnected.status_code == 200
+    assert disconnected.json()["connected"] is False
+
+    unavailable = client.get("/api/database")
+    assert unavailable.status_code == 503
+    assert "未连接" in unavailable.json()["detail"]
+
+    connected = client.post("/api/duckdb/connect")
+    assert connected.status_code == 200
+    assert connected.json()["connected"] is True
+
+
+def test_duckdb_disconnect_is_rejected_while_operation_is_active(client):
+    with main.duckdb_manager.operation():
+        response = client.post("/api/duckdb/disconnect")
+        assert response.status_code == 409
+        assert "操作正在运行" in response.json()["detail"]
+
+
+def test_csv_preview_works_while_duckdb_is_disconnected(client, monkeypatch):
+    disconnected = client.post("/api/duckdb/disconnect")
+    assert disconnected.status_code == 200
+
+    def reject_duckdb_connect(*args, **kwargs):
+        raise AssertionError("CSV preview must not open another DuckDB connection")
+
+    monkeypatch.setattr(main.duckdb, "connect", reject_duckdb_connect)
+    response = client.post(
+        "/api/upload/preview",
+        files={"file": ("sales.csv", "name,amount\nAda,12\nLin,8\n", "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["preview"][0] == {"name": "Ada", "amount": 12}
+    assert client.get("/api/duckdb/status").json()["connected"] is False

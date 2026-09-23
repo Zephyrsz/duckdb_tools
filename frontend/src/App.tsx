@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getDatabase, getSemanticSummary, getSemanticTable, getSemanticTables, getTable, importFile, previewUpload, publishSemantic, runQuery, scanSemantic, updateSemanticDraft, validateSemantic } from "./api";
-import type { DatabaseInfo, ImportResult, PreviewPayload, QueryResult, SemanticDraft, SemanticSummary, SemanticTable, SemanticTableSummary, SemanticValidation, TableInfo } from "./types";
+import { connectDuckDB, disconnectDuckDB, getDatabase, getDuckDBStatus, getSemanticSummary, getSemanticTable, getSemanticTables, getTable, importFile, previewUpload, publishSemantic, runQuery, scanSemantic, updateSemanticDraft, validateSemantic } from "./api";
+import type { DatabaseInfo, DuckDBStatus, ImportResult, PreviewPayload, QueryResult, SemanticDraft, SemanticSummary, SemanticTable, SemanticTableSummary, SemanticValidation, TableInfo } from "./types";
 import { Icon } from "./components/Icon";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -37,6 +37,8 @@ export default function App() {
   const [queryBusy, setQueryBusy] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  const [duckdbStatus, setDuckdbStatus] = useState<DuckDBStatus>({ connected: false, database: "workspace.duckdb", connected_at: null, active_operations: 0, auto_connect: true });
+  const [duckdbBusy, setDuckdbBusy] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [semanticSummary, setSemanticSummary] = useState<SemanticSummary | null>(null);
   const [semanticTables, setSemanticTables] = useState<SemanticTableSummary[]>([]);
@@ -50,13 +52,35 @@ export default function App() {
   const refreshDatabase = useCallback(async () => {
     try {
       setGlobalError(null);
-      setDatabase(await getDatabase());
+      const [nextDatabase, nextStatus] = await Promise.all([getDatabase(), getDuckDBStatus()]);
+      setDatabase(nextDatabase);
+      setDuckdbStatus(nextStatus);
     } catch (error) {
       setGlobalError(error instanceof Error ? error.message : "无法连接数据服务");
+      try { setDuckdbStatus(await getDuckDBStatus()); } catch { /* backend unavailable */ }
     }
   }, []);
 
   useEffect(() => { void refreshDatabase(); }, [refreshDatabase]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => { void getDuckDBStatus().then(setDuckdbStatus).catch(() => undefined); }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const handleDuckDBConnection = async (action: "connect" | "disconnect") => {
+    setDuckdbBusy(true);
+    setGlobalError(null);
+    try {
+      const nextStatus = action === "connect" ? await connectDuckDB() : await disconnectDuckDB();
+      setDuckdbStatus(nextStatus);
+      if (nextStatus.connected) await refreshDatabase();
+      else setDatabase((current) => ({ ...current, tables: [] }));
+    } catch (error) {
+      setGlobalError(error instanceof Error ? error.message : "DuckDB 连接操作失败");
+      try { setDuckdbStatus(await getDuckDBStatus()); } catch { /* backend unavailable */ }
+    } finally { setDuckdbBusy(false); }
+  };
 
   const refreshSemantic = useCallback(async () => {
     setSemanticLoading(true);
@@ -197,9 +221,9 @@ export default function App() {
 
   return <div className="app-shell">
     <div className={`sidebar-backdrop ${sidebarOpen ? "is-visible" : ""}`} onClick={() => setSidebarOpen(false)} />
-    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={(nextMode) => { setMode(nextMode); setSidebarOpen(false); }} onSelectTable={loadTable} onImport={startUpload} /></div>
+    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={(nextMode) => { setMode(nextMode); setSidebarOpen(false); }} onSelectTable={loadTable} onImport={startUpload} duckdbConnected={duckdbStatus.connected} /></div>
     <main className="workspace">
-      <Topbar mode={mode} onModeChange={setMode} tableName={activeTable} tableCount={database.tables.length} onUpload={startUpload} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
+      <Topbar mode={mode} onModeChange={setMode} tableName={activeTable} tableCount={database.tables.length} onUpload={startUpload} onToggleSidebar={() => setSidebarOpen((open) => !open)} duckdbStatus={duckdbStatus} duckdbBusy={duckdbBusy} onConnect={() => void handleDuckDBConnection("connect")} onDisconnect={() => void handleDuckDBConnection("disconnect")} />
       <input ref={fileInputRef} id="upload-input" type="file" accept=".csv,.xlsx" className="visually-hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void beginPreview(file); event.target.value = ""; }} />
       {!mode.startsWith("semantic") && <div className="mode-tabs" role="tablist" aria-label="工作区视图">
         <button className={mode === "import" ? "is-active" : ""} onClick={() => setMode("import")} role="tab" aria-selected={mode === "import"}><Icon name="upload" size={14} /> 导入数据</button>

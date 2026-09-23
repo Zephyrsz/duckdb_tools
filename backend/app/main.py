@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import re
 import time
 from datetime import date, datetime
@@ -14,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .duckdb_manager import DuckDBBusyError, DuckDBConnectionManager, DuckDBNotConnectedError
 from .semantic import SemanticRepository, build_drafts, profile_database
 
 
@@ -41,7 +43,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -70,6 +72,7 @@ def ensure_storage() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     resolve_database_path().parent.mkdir(parents=True, exist_ok=True)
     SemanticRepository(METADATA_DB_PATH)
+    duckdb_manager.initialize()
 
 
 def resolve_database_path() -> Path:
@@ -78,9 +81,12 @@ def resolve_database_path() -> Path:
     return Path(configured) if configured else DB_PATH
 
 
+duckdb_manager = DuckDBConnectionManager(resolve_database_path)
+
+
 def connect_db() -> duckdb.DuckDBPyConnection:
     ensure_storage()
-    return duckdb.connect(str(resolve_database_path()))
+    return duckdb_manager.lease()  # type: ignore[return-value]
 
 
 def semantic_repository() -> SemanticRepository:
@@ -89,11 +95,8 @@ def semantic_repository() -> SemanticRepository:
 
 
 def semantic_profiles() -> dict[str, dict[str, Any]]:
-    connection = connect_db()
-    try:
+    with duckdb_manager.operation() as connection:
         return {profile["name"]: profile for profile in profile_database(connection)}
-    finally:
-        connection.close()
 
 
 def json_value(value: Any) -> Any:
@@ -148,6 +151,38 @@ def infer_excel_type(values: list[Any]) -> str:
     return "VARCHAR"
 
 
+def parse_csv_value(value: str) -> Any:
+    value = value.strip()
+    if not value:
+        return None
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+def read_csv_preview(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        raw_rows = list(csv.reader(stream))
+    if not raw_rows:
+        raise ValueError("CSV 文件没有可读取的表头")
+    headers = normalize_headers(raw_rows[0])
+    body = [
+        [parse_csv_value(value) for value in row[: len(headers)]]
+        + [None] * max(0, len(headers) - len(row))
+        for row in raw_rows[1:]
+    ]
+    columns = [{"name": name, "type": infer_excel_type([row[index] for row in body])} for index, name in enumerate(headers)]
+    rows = [dict(zip(headers, row)) for row in body[:PREVIEW_ROWS]]
+    return rows, columns
+
+
 def read_excel(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]], list[list[Any]]]:
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
@@ -168,13 +203,7 @@ def preview_upload(path: Path, kind: str) -> tuple[list[dict[str, Any]], list[di
     if kind == "excel":
         rows, columns, _ = read_excel(path)
         return rows, columns
-    connection = duckdb.connect()
-    try:
-        relation = connection.sql("SELECT * FROM read_csv_auto(?, header = true)", params=[str(path)])
-        rows = relation.fetchmany(PREVIEW_ROWS)
-        return rows_as_dicts(relation.description, rows), columns_from_description(relation.description)
-    finally:
-        connection.close()
+    return read_csv_preview(path)
 
 
 def kind_for_filename(filename: str) -> str:
@@ -206,9 +235,38 @@ def table_columns(connection: duckdb.DuckDBPyConnection, table_name: str) -> lis
     return [{"name": str(row[0]), "type": str(row[1])} for row in rows]
 
 
+def database_not_connected(error: DuckDBNotConnectedError) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(error))
+
+
+def database_busy(error: DuckDBBusyError) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(error))
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/duckdb/status")
+def duckdb_status() -> dict[str, object]:
+    return duckdb_manager.status()
+
+
+@app.post("/api/duckdb/connect")
+def duckdb_connect() -> dict[str, object]:
+    try:
+        return duckdb_manager.connect()
+    except DuckDBBusyError as error:
+        raise database_busy(error) from error
+
+
+@app.post("/api/duckdb/disconnect")
+def duckdb_disconnect() -> dict[str, object]:
+    try:
+        return duckdb_manager.disconnect()
+    except DuckDBBusyError as error:
+        raise database_busy(error) from error
 
 
 @app.post("/api/upload/preview")
@@ -237,62 +295,64 @@ def import_file(request: ImportRequest) -> dict[str, Any]:
     kind = ALLOWED_EXTENSIONS.get(path.suffix.lower())
     if not kind:
         raise HTTPException(status_code=400, detail="上传文件格式无效")
-    connection = connect_db()
     try:
-        connection.execute("BEGIN")
-        if kind == "csv":
-            connection.execute(
-                f"CREATE OR REPLACE TABLE {quoted_table} AS SELECT * FROM read_csv_auto(?, header = ?)",
-                [str(path), request.has_header],
-            )
-        else:
-            _, columns, body = read_excel(path)
-            if not columns:
-                raise HTTPException(status_code=400, detail="Excel 文件没有可导入的列")
-            column_sql = ", ".join(f"{quote_identifier(column['name'])} {column['type']}" for column in columns)
-            connection.execute(f"CREATE OR REPLACE TABLE {quoted_table} ({column_sql})")
-            placeholders = ", ".join("?" for _ in columns)
-            connection.executemany(f"INSERT INTO {quoted_table} VALUES ({placeholders})", body)
-        connection.execute("COMMIT")
-        row_count = connection.execute(f"SELECT COUNT(*) FROM {quoted_table}").fetchone()[0]
-        return {"table_name": table_name, "row_count": row_count, "columns": table_columns(connection, table_name)}
+        with duckdb_manager.operation() as connection:
+            connection.execute("BEGIN")
+            try:
+                if kind == "csv":
+                    connection.execute(
+                        f"CREATE OR REPLACE TABLE {quoted_table} AS SELECT * FROM read_csv_auto(?, header = ?)",
+                        [str(path), request.has_header],
+                    )
+                else:
+                    _, columns, body = read_excel(path)
+                    if not columns:
+                        raise HTTPException(status_code=400, detail="Excel 文件没有可导入的列")
+                    column_sql = ", ".join(f"{quote_identifier(column['name'])} {column['type']}" for column in columns)
+                    connection.execute(f"CREATE OR REPLACE TABLE {quoted_table} ({column_sql})")
+                    placeholders = ", ".join("?" for _ in columns)
+                    connection.executemany(f"INSERT INTO {quoted_table} VALUES ({placeholders})", body)
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+            row_count = connection.execute(f"SELECT COUNT(*) FROM {quoted_table}").fetchone()[0]
+            return {"table_name": table_name, "row_count": row_count, "columns": table_columns(connection, table_name)}
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
     except HTTPException:
-        connection.execute("ROLLBACK")
         raise
     except Exception as error:
-        connection.execute("ROLLBACK")
         raise HTTPException(status_code=400, detail=f"导入失败：{error}") from error
-    finally:
-        connection.close()
 
 
 @app.get("/api/database")
 def database_info() -> dict[str, Any]:
-    connection = connect_db()
     try:
-        table_names = [str(row[0]) for row in connection.execute("SHOW TABLES").fetchall()]
-        tables = []
-        for name in table_names:
-            count = connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(name)}").fetchone()[0]
-            tables.append({"name": name, "row_count": count})
-        return {"database": DB_PATH.name, "tables": tables}
-    finally:
-        connection.close()
+        with duckdb_manager.operation() as connection:
+            table_names = [str(row[0]) for row in connection.execute("SHOW TABLES").fetchall()]
+            tables = []
+            for name in table_names:
+                count = connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(name)}").fetchone()[0]
+                tables.append({"name": name, "row_count": count})
+            return {"database": resolve_database_path().name, "tables": tables}
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
 
 
 @app.get("/api/tables/{table_name}")
 def table_info(table_name: str) -> dict[str, Any]:
-    connection = connect_db()
     try:
-        columns = table_columns(connection, table_name)
-        result = connection.execute(f"SELECT * FROM {quote_identifier(table_name)} LIMIT {TABLE_ROWS}")
-        rows = rows_as_dicts(result.description, result.fetchall())
-        row_count = connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}").fetchone()[0]
-        return {"table_name": table_name, "columns": columns, "rows": rows, "row_count": row_count}
+        with duckdb_manager.operation() as connection:
+            columns = table_columns(connection, table_name)
+            result = connection.execute(f"SELECT * FROM {quote_identifier(table_name)} LIMIT {TABLE_ROWS}")
+            rows = rows_as_dicts(result.description, result.fetchall())
+            row_count = connection.execute(f"SELECT COUNT(*) FROM {quote_identifier(table_name)}").fetchone()[0]
+            return {"table_name": table_name, "columns": columns, "rows": rows, "row_count": row_count}
     except duckdb.CatalogException as error:
         raise HTTPException(status_code=404, detail="数据表不存在") from error
-    finally:
-        connection.close()
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
 
 
 def validate_read_only_sql(sql: str) -> None:
@@ -309,21 +369,21 @@ def validate_read_only_sql(sql: str) -> None:
 @app.post("/api/query")
 def run_query(request: QueryRequest) -> dict[str, Any]:
     validate_read_only_sql(request.sql)
-    connection = connect_db()
     started = time.perf_counter()
     try:
-        result = connection.execute(request.sql)
-        rows = rows_as_dicts(result.description, result.fetchall()) if result.description else []
-        return {
-            "columns": columns_from_description(result.description or []),
-            "rows": rows,
-            "row_count": len(rows),
-            "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
-        }
+        with duckdb_manager.operation() as connection:
+            result = connection.execute(request.sql)
+            rows = rows_as_dicts(result.description, result.fetchall()) if result.description else []
+            return {
+                "columns": columns_from_description(result.description or []),
+                "rows": rows,
+                "row_count": len(rows),
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+            }
     except duckdb.Error as error:
         raise HTTPException(status_code=400, detail=f"查询失败：{error}") from error
-    finally:
-        connection.close()
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
 
 
 @app.get("/api/semantic/summary")
@@ -333,15 +393,21 @@ def semantic_summary() -> dict[str, Any]:
 
 @app.get("/api/semantic/tables")
 def semantic_tables() -> list[dict[str, Any]]:
-    profiles = list(semantic_profiles().values())
-    return semantic_repository().tables([{"name": profile["name"], "row_count": profile["row_count"]} for profile in profiles])
+    try:
+        profiles = list(semantic_profiles().values())
+        return semantic_repository().tables([{"name": profile["name"], "row_count": profile["row_count"]} for profile in profiles])
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
 
 
 @app.get("/api/semantic/tables/{table_name}")
 def semantic_table(table_name: str) -> dict[str, Any]:
     if not TABLE_NAME_PATTERN.fullmatch(table_name):
         raise HTTPException(status_code=400, detail="表名无效")
-    profile = semantic_profiles().get(table_name)
+    try:
+        profile = semantic_profiles().get(table_name)
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
     if profile is None:
         raise HTTPException(status_code=404, detail="数据表不存在")
     return semantic_repository().table(table_name, profile)
@@ -349,13 +415,13 @@ def semantic_table(table_name: str) -> dict[str, Any]:
 
 @app.post("/api/semantic/scan")
 def scan_semantic() -> dict[str, Any]:
-    connection = connect_db()
     try:
-        profiles = profile_database(connection)
-    finally:
-        connection.close()
-    drafts = semantic_repository().replace_drafts(build_drafts(profiles))
-    return {"table_count": len(profiles), "draft_count": len(drafts), "drafts": drafts}
+        with duckdb_manager.operation() as connection:
+            profiles = profile_database(connection)
+        drafts = semantic_repository().replace_drafts(build_drafts(profiles))
+        return {"table_count": len(profiles), "draft_count": len(drafts), "drafts": drafts}
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
 
 
 @app.patch("/api/semantic/drafts/{draft_id}")
@@ -371,13 +437,18 @@ def update_semantic_draft(draft_id: int, request: SemanticDraftPatch) -> dict[st
 
 @app.post("/api/semantic/validate")
 def validate_semantic() -> dict[str, Any]:
-    return semantic_repository().validate(semantic_profiles())
+    try:
+        return semantic_repository().validate(semantic_profiles())
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
 
 
 @app.post("/api/semantic/publish")
 def publish_semantic() -> dict[str, Any]:
     try:
         return semantic_repository().publish(semantic_profiles())
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

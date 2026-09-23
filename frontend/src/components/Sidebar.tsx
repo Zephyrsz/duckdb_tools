@@ -11,6 +11,7 @@ type Props = {
   onModeChange: (mode: WorkspaceMode) => void;
   onSelectTable: (name: string) => void;
   onImport: () => void;
+  duckdbConnected: boolean;
 };
 
 type ModuleItem = {
@@ -66,7 +67,7 @@ function ModuleNav({ label, items, mode, onModeChange }: { label: string; items:
   );
 }
 
-export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange, onSelectTable, onImport }: Props) {
+export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange, onSelectTable, onImport, duckdbConnected }: Props) {
   return (
     <aside className="sidebar">
       <div className="brand-lockup">
@@ -89,7 +90,7 @@ export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange,
           <strong>{databaseName}</strong>
           <span>本地 DuckDB 数据集</span>
         </div>
-        <span className="status-dot" title="连接正常" />
+        <span className={`status-dot ${duckdbConnected ? "" : "is-disconnected"}`} title={duckdbConnected ? "连接正常" : "未连接 DuckDB"} />
       </div>
 
       <div className="table-heading">

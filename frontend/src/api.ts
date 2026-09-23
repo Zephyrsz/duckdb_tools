@@ -10,6 +10,7 @@ import type {
   SemanticTable,
   SemanticTableSummary,
   SemanticValidation,
+  DuckDBStatus,
 } from "./types";
 
 const API_ROOT = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
@@ -25,6 +26,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getDatabase(): Promise<DatabaseInfo> {
   return request<DatabaseInfo>("/database");
+}
+
+export function getDuckDBStatus(): Promise<DuckDBStatus> {
+  return request<DuckDBStatus>("/duckdb/status");
+}
+
+export function connectDuckDB(): Promise<DuckDBStatus> {
+  return request<DuckDBStatus>("/duckdb/connect", { method: "POST" });
+}
+
+export function disconnectDuckDB(): Promise<DuckDBStatus> {
+  return request<DuckDBStatus>("/duckdb/disconnect", { method: "POST" });
 }
 
 export function previewUpload(file: File): Promise<PreviewPayload> {

@@ -4,6 +4,14 @@ export type TableSummary = { name: string; row_count: number };
 
 export type DatabaseInfo = { database: string; tables: TableSummary[] };
 
+export type DuckDBStatus = {
+  connected: boolean;
+  database: string;
+  connected_at: string | null;
+  active_operations: number;
+  auto_connect: boolean;
+};
+
 export type PreviewPayload = {
   filename: string;
   stored_path: string;

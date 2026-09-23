@@ -81,6 +81,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .breadcrumb strong { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-spacer { flex: 1; }
 .database-health { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.database-health.is-disconnected { color: var(--danger); }
+.status-dot.is-disconnected { background: var(--danger); }
+.database-control { display: inline-flex; align-items: center; gap: 4px; height: 25px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 5px; background: white; color: #50606b; cursor: pointer; font-size: 10px; font-weight: 650; }
+.database-control:hover { border-color: var(--accent); color: var(--accent-dark); background: #f3faf7; }
+.database-control:disabled { cursor: not-allowed; opacity: .5; }
 .upload-button, .primary-button, .run-button, .secondary-button { border: 0; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; font-weight: 650; transition: background-color 160ms ease, transform 160ms ease, box-shadow 160ms ease; }
 .upload-button, .primary-button { height: 34px; padding: 0 14px; color: white; background: var(--accent); box-shadow: 0 5px 13px rgba(13, 155, 120, .18); font-size: 12px; }
 .upload-button:hover, .primary-button:hover { background: var(--accent-dark); }
