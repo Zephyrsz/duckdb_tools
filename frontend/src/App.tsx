@@ -26,7 +26,7 @@ function sqlTableReference(tableRef: string) {
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("import");
-  const [database, setDatabase] = useState<DatabaseInfo>({ database: "workspace.duckdb", tables: [] });
+  const [database, setDatabase] = useState<DatabaseInfo>({ database: "workspace.duckdb", databases: [], tables: [] });
   const [activeTable, setActiveTable] = useState<string | null>(null);
   const [table, setTable] = useState<TableInfo | null>(null);
   const [tableLoading, setTableLoading] = useState(false);
@@ -83,7 +83,7 @@ export default function App() {
       const nextStatus = action === "connect" ? await connectDuckDB() : await disconnectDuckDB();
       setDuckdbStatus(nextStatus);
       if (nextStatus.connected) await refreshDatabase();
-      else setDatabase((current) => ({ ...current, tables: [] }));
+      else setDatabase((current) => ({ ...current, databases: [], tables: [] }));
     } catch (error) {
       setGlobalError(error instanceof Error ? error.message : "DuckDB 连接操作失败");
       try { setDuckdbStatus(await getDuckDBStatus()); } catch { /* backend unavailable */ }
@@ -229,7 +229,7 @@ export default function App() {
 
   return <div className="app-shell">
     <div className={`sidebar-backdrop ${sidebarOpen ? "is-visible" : ""}`} onClick={() => setSidebarOpen(false)} />
-    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={(nextMode) => { setMode(nextMode); setSidebarOpen(false); }} onSelectTable={loadTable} onImport={startUpload} duckdbStatus={duckdbStatus} duckdbBusy={duckdbBusy} onConnect={() => void handleDuckDBConnection("connect")} onDisconnect={() => void handleDuckDBConnection("disconnect")} /></div>
+    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} databases={database.databases} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={(nextMode) => { setMode(nextMode); setSidebarOpen(false); }} onSelectTable={loadTable} onImport={startUpload} duckdbStatus={duckdbStatus} duckdbBusy={duckdbBusy} onConnect={() => void handleDuckDBConnection("connect")} onDisconnect={() => void handleDuckDBConnection("disconnect")} /></div>
     <main className="workspace">
       <Topbar mode={mode} onModeChange={setMode} tableName={activeTable} tableCount={database.tables.length} onUpload={startUpload} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
       <input ref={fileInputRef} id="upload-input" type="file" accept=".csv,.xlsx" className="visually-hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void beginPreview(file); event.target.value = ""; }} />

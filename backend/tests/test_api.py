@@ -30,6 +30,14 @@ def test_csv_preview_returns_headers_types_and_rows(client):
     assert Path(payload["stored_path"]).exists()
 
 
+def test_database_info_includes_empty_default_database(client):
+    response = client.get("/api/database")
+
+    assert response.status_code == 200
+    assert {item["name"] for item in response.json()["databases"]} == {"db"}
+    assert response.json()["databases"][0]["table_count"] == 0
+
+
 def test_excel_preview_returns_headers_and_rows(client):
     openpyxl = pytest.importorskip("openpyxl")
     from io import BytesIO
@@ -76,6 +84,7 @@ def test_import_list_table_browse_and_select_query(client):
     database = client.get("/api/database")
     assert database.status_code == 200
     assert database.json()["tables"][0]["name"] == "sales"
+    assert database.json()["databases"] == [{"name": "db", "table_count": 1}]
 
     table = client.get("/api/tables/sales")
     assert table.status_code == 200

@@ -1,8 +1,9 @@
 export type ColumnMeta = { name: string; type: string };
 
 export type TableSummary = { name: string; database_name?: string; table_ref?: string; row_count: number };
+export type DatabaseSummary = { name: string; table_count: number };
 
-export type DatabaseInfo = { database: string; tables: TableSummary[] };
+export type DatabaseInfo = { database: string; databases: DatabaseSummary[]; tables: TableSummary[] };
 
 export type DatabaseSchema = string;
 

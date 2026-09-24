@@ -1,10 +1,12 @@
-import type { DuckDBStatus, TableSummary } from "../types";
+import { useEffect, useState } from "react";
+import type { DatabaseSummary, DuckDBStatus, TableSummary } from "../types";
 import { Icon } from "./Icon";
 
 export type WorkspaceMode = "import" | "browse" | "query" | "semantic" | "semanticTable";
 
 type Props = {
   databaseName: string;
+  databases: DatabaseSummary[];
   tables: TableSummary[];
   activeTable: string | null;
   mode: WorkspaceMode;
@@ -70,7 +72,15 @@ function ModuleNav({ label, items, mode, onModeChange }: { label: string; items:
   );
 }
 
-export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange, onSelectTable, onImport, duckdbStatus, duckdbBusy, onConnect, onDisconnect }: Props) {
+export function Sidebar({ databaseName, databases, tables, activeTable, mode, onModeChange, onSelectTable, onImport, duckdbStatus, duckdbBusy, onConnect, onDisconnect }: Props) {
+  const [selectedDatabase, setSelectedDatabase] = useState<string | null>(null);
+  useEffect(() => {
+    if (!duckdbStatus.connected || (selectedDatabase && !databases.some((database) => database.name === selectedDatabase))) {
+      setSelectedDatabase(null);
+    }
+  }, [databases, duckdbStatus.connected, selectedDatabase]);
+  const visibleTables = selectedDatabase ? tables.filter((table) => table.database_name === selectedDatabase) : [];
+
   return (
     <aside className="sidebar">
       <div className="brand-lockup">
@@ -100,29 +110,27 @@ export function Sidebar({ databaseName, tables, activeTable, mode, onModeChange,
       </div>
 
       <div className="table-heading">
-        <span>数据表</span>
-        <span className="table-count">{tables.length}</span>
+        {selectedDatabase ? <button type="button" className="sidebar-back" onClick={() => setSelectedDatabase(null)}><Icon name="chevronLeft" size={13} /> 数据浏览</button> : <span>数据浏览</span>}
+        <span className="table-count">{selectedDatabase ? visibleTables.length : databases.length}</span>
       </div>
-      <div className="table-list" aria-label="数据表列表">
-        {tables.length === 0 ? (
-          <div className="sidebar-empty">
-            <span>还没有数据表</span>
-            <button className="text-button" onClick={onImport}>上传第一份数据 <Icon name="arrowUpRight" size={13} /></button>
-          </div>
-        ) : (
-          tables.map((table) => (
-            <button
-              type="button"
-              className={`table-nav-item ${activeTable === (table.table_ref ?? table.name) ? "is-active" : ""}`}
-              key={table.name}
-              onClick={() => onSelectTable(table.table_ref ?? table.name)}
-            >
-              <Icon name="table" size={15} />
-              <span className="table-nav-name">{table.name}</span>
-              <span className="row-badge">{table.row_count.toLocaleString()}</span>
+      <div className="table-list" aria-label={selectedDatabase ? "数据表列表" : "数据库列表"}>
+        {!duckdbStatus.connected ? (
+          <div className="sidebar-empty"><span>请先连接 DuckDB</span></div>
+        ) : selectedDatabase ? (
+          visibleTables.length === 0 ? (
+            <div className="sidebar-empty"><span>这个数据库还没有数据表</span><button className="text-button" onClick={onImport}>导入数据 <Icon name="arrowUpRight" size={13} /></button></div>
+          ) : visibleTables.map((table) => (
+            <button type="button" className={`table-nav-item ${activeTable === (table.table_ref ?? table.name) ? "is-active" : ""}`} key={table.table_ref ?? table.name} onClick={() => onSelectTable(table.table_ref ?? table.name)}>
+              <Icon name="table" size={15} /><span className="table-nav-name">{table.name}</span><span className="row-badge">{table.row_count.toLocaleString()}</span>
             </button>
           ))
-        )}
+        ) : databases.length === 0 ? (
+          <div className="sidebar-empty"><span>还没有数据库</span><button className="text-button" onClick={onImport}>上传第一份数据 <Icon name="arrowUpRight" size={13} /></button></div>
+        ) : databases.map((database) => (
+          <button type="button" className="table-nav-item database-nav-item" key={database.name} onClick={() => setSelectedDatabase(database.name)}>
+            <Icon name="database" size={15} /><span className="table-nav-name">{database.name}</span><span className="row-badge">{database.table_count} 表</span><Icon name="chevronRight" size={13} />
+          </button>
+        ))}
       </div>
 
       <div className="sidebar-bottom">

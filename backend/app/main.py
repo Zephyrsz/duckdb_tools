@@ -418,7 +418,20 @@ def database_info() -> dict[str, Any]:
     try:
         with duckdb_manager.operation() as connection:
             tables = table_catalog(connection)
-            return {"database": resolve_database_path().name, "tables": tables}
+            schema_rows = connection.execute(
+                """
+                SELECT schema_name
+                FROM information_schema.schemata
+                WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+                ORDER BY schema_name
+                """
+            ).fetchall()
+            database_counts: dict[str, int] = {DEFAULT_DATABASE_NAME: 0}
+            database_counts.update({str(row[0]): 0 for row in schema_rows if str(row[0]) not in {"main", DEFAULT_DATABASE_NAME}})
+            for table in tables:
+                database_counts[table["database_name"]] = database_counts.get(table["database_name"], 0) + 1
+            databases = [{"name": name, "table_count": count} for name, count in sorted(database_counts.items())]
+            return {"database": resolve_database_path().name, "databases": databases, "tables": tables}
     except DuckDBNotConnectedError as error:
         raise database_not_connected(error) from error
 
