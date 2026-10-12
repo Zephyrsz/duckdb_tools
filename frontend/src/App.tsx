@@ -15,6 +15,7 @@ type ImportStage = "select" | "preview" | "importing" | "complete";
 
 const starterSql = "SELECT 1 AS sample_value";
 const DEFAULT_DATABASE_NAME = "db";
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 function defaultTableName(filename: string) {
   return filename.replace(/\.(csv|xlsx|xls)$/i, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^([^a-z_])/, "table_$1").replace(/_+/g, "_").replace(/^_+|_+$/g, "") || "imported_data";
@@ -35,6 +36,7 @@ export default function App() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importStage, setImportStage] = useState<ImportStage>("select");
   const [importBusy, setImportBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [tableName, setTableName] = useState("");
   const [databaseName, setDatabaseName] = useState(DEFAULT_DATABASE_NAME);
   const [databaseSchemas, setDatabaseSchemas] = useState<string[]>([DEFAULT_DATABASE_NAME]);
@@ -55,6 +57,7 @@ export default function App() {
   const [semanticBusy, setSemanticBusy] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
 
   const refreshDatabase = useCallback(async () => {
     try {
@@ -157,22 +160,57 @@ export default function App() {
   }, []);
 
   const beginPreview = async (file: File) => {
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = null;
     setMode("import");
     setImportError(null);
     setImportResult(null);
     setImportStage("select");
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setUploadProgress(null);
+      setImportBusy(false);
+      setImportError("文件不能超过 200 MB");
+      setPreview(null);
+      return;
+    }
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    setPreview(null);
+    setUploadProgress(0);
     setImportBusy(true);
     try {
-      const nextPreview = await previewUpload(file);
+      const nextPreview = await previewUpload(file, { signal: controller.signal, onProgress: (progress) => {
+        if (uploadAbortRef.current === controller) setUploadProgress(progress);
+      } });
+      if (uploadAbortRef.current !== controller) return;
       setPreview(nextPreview);
       setTableName(defaultTableName(nextPreview.filename));
       setImportStage("preview");
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : "文件预览失败");
+      if (uploadAbortRef.current !== controller) return;
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setImportError(null);
+      } else {
+        setImportError(error instanceof Error ? error.message : "文件上传或预览失败");
+      }
       setPreview(null);
     } finally {
-      setImportBusy(false);
+      if (uploadAbortRef.current === controller) {
+        uploadAbortRef.current = null;
+        setUploadProgress(null);
+        setImportBusy(false);
+      }
     }
+  };
+
+  const cancelUpload = () => {
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = null;
+    setUploadProgress(null);
+    setImportBusy(false);
+    setImportError(null);
+    setPreview(null);
+    setImportStage("select");
   };
 
   const handleImport = async () => {
@@ -240,7 +278,7 @@ export default function App() {
       </div>}
       <div className="content-area">
         {globalError && <div className="connection-banner"><Icon name="alert" size={16} /><span>{globalError}</span><button type="button" onClick={() => void refreshDatabase()}><Icon name="refresh" size={14} /> 重试</button></div>}
-        {mode === "import" && <ImportPanel stage={importStage} preview={preview} result={importResult} databaseName={databaseName} databaseOptions={databaseSchemas} onDatabaseNameChange={setDatabaseName} tableName={tableName} onTableNameChange={setTableName} onImport={() => void handleImport()} onChoose={startUpload} isBusy={importBusy} error={importError} />}
+        {mode === "import" && <ImportPanel stage={importStage} preview={preview} result={importResult} databaseName={databaseName} databaseOptions={databaseSchemas} onDatabaseNameChange={setDatabaseName} tableName={tableName} onTableNameChange={setTableName} onImport={() => void handleImport()} onChoose={startUpload} onCancelUpload={cancelUpload} uploadProgress={uploadProgress} isBusy={importBusy} error={importError} />}
         {mode === "browse" && <TableBrowser table={table} isLoading={tableLoading} error={tableError} onQuery={() => setMode("query")} />}
         {mode === "query" && <SqlWorkspace sql={sql} onSqlChange={setSql} onRun={() => void executeQuery()} isLoading={queryBusy} result={queryResult} error={queryError} tablesCount={database.tables.length} />}
         {mode === "semantic" && <SemanticOverview summary={semanticSummary} tables={semanticTables} validation={semanticValidation} isLoading={semanticLoading} isBusy={semanticBusy} error={semanticError} onScan={() => void handleScan()} onValidate={() => void handleValidate()} onPublish={() => void handlePublish()} onSelectTable={(name) => void loadSemanticTable(name)} />}

@@ -45,10 +45,44 @@ export function disconnectDuckDB(): Promise<DuckDBStatus> {
   return request<DuckDBStatus>("/duckdb/disconnect", { method: "POST" });
 }
 
-export function previewUpload(file: File): Promise<PreviewPayload> {
+export function previewUpload(
+  file: File,
+  options: { onProgress?: (progress: number) => void; signal?: AbortSignal } = {},
+): Promise<PreviewPayload> {
   const formData = new FormData();
   formData.append("file", file);
-  return request<PreviewPayload>("/upload/preview", { method: "POST", body: formData });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const cleanup = () => options.signal?.removeEventListener("abort", abortRequest);
+    const abortRequest = () => xhr.abort();
+
+    xhr.open("POST", `${API_ROOT}/upload/preview`);
+    xhr.responseType = "text";
+    xhr.withCredentials = true;
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) options.onProgress?.(Math.round((event.loaded / event.total) * 100));
+    });
+    xhr.addEventListener("load", () => {
+      cleanup();
+      let body: { detail?: string } & Partial<PreviewPayload> = {};
+      try { body = JSON.parse(xhr.responseText || "{}"); } catch { /* handled by the generic status message */ }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as PreviewPayload);
+      } else {
+        reject(new Error(body.detail ?? `上传失败（${xhr.status}）`));
+      }
+    });
+    xhr.addEventListener("error", () => { cleanup(); reject(new Error("上传失败：网络连接中断")); });
+    xhr.addEventListener("timeout", () => { cleanup(); reject(new Error("上传失败：请求超时")); });
+    xhr.addEventListener("abort", () => { cleanup(); reject(new DOMException("上传已取消", "AbortError")); });
+
+    if (options.signal?.aborted) {
+      reject(new DOMException("上传已取消", "AbortError"));
+      return;
+    }
+    options.signal?.addEventListener("abort", abortRequest, { once: true });
+    xhr.send(formData);
+  });
 }
 
 export function importFile(payload: {

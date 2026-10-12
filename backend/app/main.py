@@ -22,10 +22,13 @@ from .semantic import SemanticRepository, build_drafts, profile_database
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RDS_AGENT_ROOT = Path(__import__("os").environ.get("RDS_AGENT_ROOT", PROJECT_ROOT.parent / "rds_agent"))
 DATA_DIR = Path(__import__("os").environ.get("DUCKDB_TOOLS_DATA", PROJECT_ROOT / "data"))
-UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR = Path(__import__("os").environ.get("DUCKDB_TOOLS_UPLOAD_DIR", DATA_DIR / "uploads"))
 DB_PATH = Path(__import__("os").environ.get("DUCKDB_TOOLS_DATABASE", DATA_DIR / "workspace.duckdb"))
 METADATA_DB_PATH = Path(__import__("os").environ.get("RDS_AGENT_METADATA_DB", RDS_AGENT_ROOT / "var" / "metadata.db"))
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+CSV_TYPE_SAMPLE_ROWS = 1_000
+UPLOAD_RETENTION_SECONDS = int(__import__("os").environ.get("DUCKDB_TOOLS_UPLOAD_RETENTION_SECONDS", 24 * 60 * 60))
 PREVIEW_ROWS = 5
 TABLE_ROWS = 100
 DEFAULT_DATABASE_NAME = "db"
@@ -73,6 +76,7 @@ class SemanticDraftPatch(BaseModel):
 def ensure_storage() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_uploads()
     resolve_database_path().parent.mkdir(parents=True, exist_ok=True)
     SemanticRepository(METADATA_DB_PATH)
     duckdb_manager.initialize()
@@ -88,6 +92,20 @@ def resolve_database_path() -> Path:
 
 
 duckdb_manager = DuckDBConnectionManager(resolve_database_path)
+
+
+def cleanup_stale_uploads() -> None:
+    cutoff = time.time() - UPLOAD_RETENTION_SECONDS
+    for path in UPLOAD_DIR.iterdir():
+        try:
+            if path.name == ".gitkeep":
+                continue
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
 
 
 def connect_db() -> duckdb.DuckDBPyConnection:
@@ -180,7 +198,12 @@ def parse_csv_value(value: str) -> Any:
 
 def read_csv_preview(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
-        raw_rows = list(csv.reader(stream))
+        reader = csv.reader(stream)
+        raw_rows: list[list[str]] = []
+        for row_index, row in enumerate(reader):
+            raw_rows.append(row)
+            if row_index >= CSV_TYPE_SAMPLE_ROWS:
+                break
     if not raw_rows:
         raise ValueError("CSV 文件没有可读取的表头")
     headers = normalize_headers(raw_rows[0])
@@ -233,6 +256,14 @@ def safe_upload_path(stored_path: str) -> Path:
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="上传文件不存在，请重新上传")
     return path
+
+
+def format_upload_limit(limit: int) -> str:
+    if limit % (1024 * 1024) == 0:
+        return f"{limit // (1024 * 1024)} MB"
+    if limit % 1024 == 0:
+        return f"{limit // 1024} KB"
+    return f"{limit} 字节"
 
 
 def quote_identifier(identifier: str) -> str:
@@ -356,17 +387,29 @@ def database_schemas() -> list[str]:
 async def upload_preview(file: UploadFile = File(...)) -> dict[str, Any]:
     filename = Path(file.filename or "upload").name
     kind = kind_for_filename(filename)
-    content = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="文件不能超过 50 MB")
     ensure_storage()
     stored_path = UPLOAD_DIR / f"{uuid4().hex}{Path(filename).suffix.lower()}"
-    stored_path.write_bytes(content)
+    partial_path = stored_path.with_name(f"{stored_path.name}.part")
     try:
+        total_bytes = 0
+        with partial_path.open("wb") as target:
+            while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail=f"文件不能超过 {format_upload_limit(MAX_UPLOAD_BYTES)}")
+                target.write(chunk)
+        partial_path.replace(stored_path)
         rows, columns = preview_upload(stored_path, kind)
+    except HTTPException:
+        partial_path.unlink(missing_ok=True)
+        stored_path.unlink(missing_ok=True)
+        raise
     except Exception as error:
+        partial_path.unlink(missing_ok=True)
         stored_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"文件解析失败：{error}") from error
+    finally:
+        await file.close()
     return {"filename": filename, "stored_path": str(stored_path), "kind": kind, "columns": columns, "preview": rows}
 
 
@@ -381,6 +424,7 @@ def import_file(request: ImportRequest) -> dict[str, Any]:
     kind = ALLOWED_EXTENSIONS.get(path.suffix.lower())
     if not kind:
         raise HTTPException(status_code=400, detail="上传文件格式无效")
+    result: dict[str, Any]
     try:
         with duckdb_manager.operation() as connection:
             connection.execute("BEGIN")
@@ -404,13 +448,15 @@ def import_file(request: ImportRequest) -> dict[str, Any]:
                 connection.execute("ROLLBACK")
                 raise
             row_count = connection.execute(f"SELECT COUNT(*) FROM {quoted_table}").fetchone()[0]
-            return {"database_name": database_name, "table_name": table_name, "table_ref": f"{database_name}.{table_name}", "row_count": row_count, "columns": table_columns(connection, table_name, database_name)}
+            result = {"database_name": database_name, "table_name": table_name, "table_ref": f"{database_name}.{table_name}", "row_count": row_count, "columns": table_columns(connection, table_name, database_name)}
     except DuckDBNotConnectedError as error:
         raise database_not_connected(error) from error
     except HTTPException:
         raise
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"导入失败：{error}") from error
+    path.unlink(missing_ok=True)
+    return result
 
 
 @app.get("/api/database")

@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +30,59 @@ def test_csv_preview_returns_headers_types_and_rows(client):
     assert [column["name"] for column in payload["columns"]] == ["name", "amount"]
     assert payload["preview"][0] == {"name": "Ada", "amount": 12}
     assert Path(payload["stored_path"]).exists()
+
+
+def test_large_csv_preview_is_saved_in_chunks_and_kept_for_import(client):
+    row = b"Ada,12\n"
+    content = b"name,amount\n" + row * ((10 * 1024 * 1024) // len(row))
+
+    response = client.post(
+        "/api/upload/preview",
+        files={"file": ("large.csv", content, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    stored_path = Path(payload["stored_path"])
+    assert stored_path.parent == main.UPLOAD_DIR
+    assert stored_path.stat().st_size == len(content)
+    assert len(payload["preview"]) == main.PREVIEW_ROWS
+
+    imported = client.post(
+        "/api/import",
+        json={"stored_path": payload["stored_path"], "table_name": "large_sales", "has_header": True},
+    )
+    assert imported.status_code == 200
+    assert not stored_path.exists()
+
+
+def test_upload_rejects_content_over_configured_limit_and_cleans_temp_files(client, monkeypatch):
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 1024)
+    response = client.post(
+        "/api/upload/preview",
+        files={"file": ("too-large.csv", b"x" * 2048, "text/csv")},
+    )
+
+    assert response.status_code == 413
+    assert "1 KB" in response.json()["detail"]
+    assert list(main.UPLOAD_DIR.iterdir()) == []
+
+
+def test_cleanup_keeps_active_uploads_and_removes_expired_files(client):
+    active = main.UPLOAD_DIR / "active.csv.part"
+    expired = main.UPLOAD_DIR / "expired.csv.part"
+    pending = main.UPLOAD_DIR / "pending.csv"
+    for path in [active, expired, pending]:
+        path.write_bytes(b"name\nAda\n")
+    old_time = time.time() - main.UPLOAD_RETENTION_SECONDS - 1
+    for path in [expired, pending]:
+        os.utime(path, (old_time, old_time))
+
+    main.cleanup_stale_uploads()
+
+    assert active.exists()
+    assert not expired.exists()
+    assert not pending.exists()
 
 
 def test_database_info_includes_empty_default_database(client):

@@ -15,6 +15,8 @@ type Props = {
   onTableNameChange: (value: string) => void;
   onImport: () => void;
   onChoose: () => void;
+  onCancelUpload: () => void;
+  uploadProgress: number | null;
   isBusy: boolean;
   error: string | null;
 };
@@ -28,7 +30,7 @@ const stages: { id: Stage; number: string; label: string }[] = [
 
 const NEW_DATABASE_VALUE = "__new_database__";
 
-export function ImportPanel({ stage, preview, result, tableName, databaseName, databaseOptions, onDatabaseNameChange, onTableNameChange, onImport, onChoose, isBusy, error }: Props) {
+export function ImportPanel({ stage, preview, result, tableName, databaseName, databaseOptions, onDatabaseNameChange, onTableNameChange, onImport, onChoose, onCancelUpload, uploadProgress, isBusy, error }: Props) {
   const activeIndex = stages.findIndex((item) => item.id === stage);
   const fileLabel = useMemo(() => preview?.filename ?? "CSV 或 Excel 文件", [preview]);
   const selectingNewDatabase = !databaseOptions.includes(databaseName);
@@ -55,13 +57,22 @@ export function ImportPanel({ stage, preview, result, tableName, databaseName, d
         })}
       </div>
 
-      {!preview && stage === "select" ? (
+      {!preview && stage === "select" && uploadProgress === null ? (
         <button type="button" className="drop-zone" onClick={onChoose}>
           <span className="drop-icon"><Icon name="upload" size={23} /></span>
           <span className="drop-title">选择一个文件开始</span>
-          <span className="drop-note">支持 CSV、XLSX，单个文件不超过 50 MB</span>
+          <span className="drop-note">支持 CSV、XLSX，单个文件不超过 200 MB</span>
           <span className="drop-action">浏览文件 <Icon name="arrowUpRight" size={14} /></span>
         </button>
+      ) : !preview && stage === "select" ? (
+        <div className="drop-zone upload-progress-zone" aria-live="polite">
+          <span className="drop-icon"><Icon name="upload" size={23} /></span>
+          <span className="drop-title">正在上传文件</span>
+          <span className="drop-note">文件会先保存到服务器临时区，上传完成后再检查预览</span>
+          <div className="upload-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={uploadProgress ?? 0}><span style={{ width: `${uploadProgress ?? 0}%` }} /></div>
+          <span className="upload-progress-value">{uploadProgress ?? 0}%</span>
+          <button type="button" className="secondary-button upload-cancel-button" onClick={onCancelUpload}><Icon name="close" size={14} /> 取消上传</button>
+        </div>
       ) : (
         <div className="import-body">
           <div className="file-summary">

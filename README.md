@@ -73,4 +73,4 @@ export RDS_AGENT_METADATA_DB=/Users/rgwei/pj/pj_data/rds_agent/var/metadata.db
 cd frontend && npm run build
 ```
 
-上传文件限制为 50 MB。查询接口仅接受单条只读语句，并禁止从任意服务器路径扫描外部文件。
+上传文件限制为 200 MB。文件会先分块写入服务器临时目录（默认 `data/uploads`），完成预览后等待用户确认，再由导入接口写入 DuckDB；导入成功后会删除对应临时文件，超过保留时间的残留文件会自动清理。查询接口仅接受单条只读语句，并禁止从任意服务器路径扫描外部文件。

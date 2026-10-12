@@ -39,6 +39,8 @@ DUCKDB_TOOLS_HOST=0.0.0.0
 DUCKDB_TOOLS_BACKEND_PORT=8001
 DUCKDB_TOOLS_FRONTEND_PORT=5173
 DUCKDB_TOOLS_DATABASE=./data/workspace.duckdb
+DUCKDB_TOOLS_UPLOAD_DIR=./data/uploads
+DUCKDB_TOOLS_UPLOAD_RETENTION_SECONDS=86400
 RDS_AGENT_ROOT=../rds_agent
 RDS_AGENT_METADATA_DB=../rds_agent/var/metadata.db
 RDS_DB_PATH=./data/workspace.duckdb
@@ -75,7 +77,7 @@ cd "$DUCKDB_TOOLS_ROOT"
 ./start.sh status
 ```
 
-访问 `http://localhost:5173`；API 健康检查为 `http://localhost:8001/api/health`。数据导入、表修改和语义发布均在此完成。
+访问 `http://localhost:5173`；API 健康检查为 `http://localhost:8001/api/health`。数据导入、表修改和语义发布均在此完成。上传文件先分块保存到 `DUCKDB_TOOLS_UPLOAD_DIR`，预览和确认导入是两个独立步骤；导入成功后临时文件删除，默认 24 小时后清理未完成导入的残留文件。
 
 ## 启动 DeepSeek Harness 与 RDS Agent
 
@@ -162,6 +164,19 @@ Harness 在前台运行时使用 `Ctrl-C` 停止。
 | Harness | `127.0.0.1:3090` |
 
 统一配置在 `/app/rds_agent/config/remote-stack.env`。其中 `DUCKDB_TOOLS_DATABASE` 和 `RDS_DB_PATH` 必须指向同一个 DuckDB 文件，`RDS_AGENT_METADATA_DB` 和 `RDS_METADATA_DB_PATH` 必须指向同一个 SQLite 文件。DeepSeek key 放在未纳入 Git 的 `/app/rds_agent/config/remote-secrets.env`，权限设置为 `600`。
+
+远程上传临时区设置为 `/app/rds_agent/data/uploads`，在 `remote-stack.env` 中配置 `DUCKDB_TOOLS_UPLOAD_DIR=/app/rds_agent/data/uploads` 和 `DUCKDB_TOOLS_UPLOAD_RETENTION_SECONDS=86400`。服务启动和上传前会清理超过保留时间的文件，正在上传的临时文件会保留；导入成功后立即删除对应文件。
+
+Nginx 的 `/admin/api/` location 需要配置以下参数。`201m` 为 200 MiB 文件预留 multipart 请求头开销，后端仍严格限制单个文件为 200 MiB：
+
+```nginx
+client_max_body_size 201m;
+client_body_timeout 600s;
+proxy_send_timeout 600s;
+proxy_read_timeout 600s;
+```
+
+修改后执行 `sudo nginx -t && sudo systemctl reload nginx`，再在 `/app/duckdb_tools` 执行 `./restart-duckdb-tools.sh` 重启后端和前端。
 
 ### 服务职责
 
