@@ -5,7 +5,7 @@ import re
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import duckdb
@@ -13,7 +13,7 @@ import openpyxl
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .duckdb_manager import DuckDBBusyError, DuckDBConnectionManager, DuckDBNotConnectedError
 from .semantic import SemanticRepository, build_drafts, profile_database
@@ -71,6 +71,20 @@ class SemanticDraftPatch(BaseModel):
     expression: str | None = Field(default=None, max_length=2_000)
     status: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class SemanticColumnPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    display_name: str = Field(default="", min_length=1, max_length=160)
+    description: str = Field(default="", max_length=500)
+    is_primary_key: bool = False
+    status: Literal["draft", "approved", "rejected"] = "draft"
+
+
+class SemanticColumnsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    columns: list[SemanticColumnPatch] = Field(min_length=1, max_length=2_000)
 
 
 def ensure_storage() -> None:
@@ -539,7 +553,7 @@ def semantic_summary() -> dict[str, Any]:
 def semantic_tables() -> list[dict[str, Any]]:
     try:
         profiles = list(semantic_profiles().values())
-        return semantic_repository().tables([{"name": profile["name"], "row_count": profile["row_count"]} for profile in profiles])
+        return semantic_repository().tables([{"name": profile["name"], "row_count": profile["row_count"], "column_count": len(profile["columns"])} for profile in profiles])
     except DuckDBNotConnectedError as error:
         raise database_not_connected(error) from error
 
@@ -566,6 +580,21 @@ def scan_semantic() -> dict[str, Any]:
         return {"table_count": len(profiles), "draft_count": len(drafts), "drafts": drafts}
     except DuckDBNotConnectedError as error:
         raise database_not_connected(error) from error
+
+
+@app.patch("/api/semantic/tables/{table_name}/columns")
+def update_semantic_columns(table_name: str, request: SemanticColumnsPatch) -> dict[str, Any]:
+    if not TABLE_REFERENCE_PATTERN.fullmatch(table_name):
+        raise HTTPException(status_code=400, detail="表名无效")
+    try:
+        profile = semantic_profiles().get(table_name)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="数据表不存在")
+        return semantic_repository().update_columns(table_name, profile, [column.model_dump(exclude_unset=True) for column in request.columns])
+    except DuckDBNotConnectedError as error:
+        raise database_not_connected(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.patch("/api/semantic/drafts/{draft_id}")

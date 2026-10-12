@@ -35,7 +35,6 @@ const workspaceModules: ModuleItem[] = [
 
 const semanticModules: ModuleItem[] = [
   { id: "catalog", label: "语义目录", icon: "catalog", mode: "semantic" },
-  { id: "annotation", label: "字段标注", icon: "annotation", mode: "semanticTable" },
 ];
 
 const exchangeModules: ModuleItem[] = [
@@ -49,7 +48,7 @@ function ModuleNav({ label, items, mode, onModeChange }: { label: string; items:
       <div className="module-heading">{label}</div>
       <nav className="module-list">
         {items.map((item) => {
-          const isActive = item.mode === mode;
+          const isActive = item.mode === mode || (item.mode === "semantic" && mode === "semanticTable");
           const isDisabled = !item.mode;
           return (
             <button

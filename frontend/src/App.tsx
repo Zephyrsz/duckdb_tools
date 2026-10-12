@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { connectDuckDB, disconnectDuckDB, getDatabase, getDatabaseSchemas, getDuckDBStatus, getSemanticSummary, getSemanticTable, getSemanticTables, getTable, importFile, previewUpload, publishSemantic, runQuery, scanSemantic, updateSemanticDraft, validateSemantic } from "./api";
-import type { DatabaseInfo, DuckDBStatus, ImportResult, PreviewPayload, QueryResult, SemanticDraft, SemanticSummary, SemanticTable, SemanticTableSummary, SemanticValidation, TableInfo } from "./types";
+import { connectDuckDB, disconnectDuckDB, getDatabase, getDatabaseSchemas, getDuckDBStatus, getSemanticSummary, getSemanticTable, getSemanticTables, getTable, importFile, previewUpload, publishSemantic, runQuery, saveSemanticColumns, scanSemantic, updateSemanticDraft, validateSemantic } from "./api";
+import type { DatabaseInfo, DuckDBStatus, ImportResult, PreviewPayload, QueryResult, SemanticColumnPatch, SemanticDraft, SemanticSummary, SemanticTable, SemanticTableSummary, SemanticValidation, TableInfo } from "./types";
 import { Icon } from "./components/Icon";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -56,8 +56,25 @@ export default function App() {
   const [semanticLoading, setSemanticLoading] = useState(false);
   const [semanticBusy, setSemanticBusy] = useState(false);
   const [semanticError, setSemanticError] = useState<string | null>(null);
+  const [fieldMetadataDirty, setFieldMetadataDirty] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
+
+  const canLeaveFields = () => !fieldMetadataDirty || window.confirm("字段标注尚未保存，离开会丢弃这些修改。确定离开吗？");
+  const changeMode = (nextMode: Mode) => {
+    if (nextMode === mode) return;
+    if (mode === "semanticTable" && semanticBusy) return;
+    if (!canLeaveFields()) return;
+    setFieldMetadataDirty(false);
+    setMode(nextMode);
+    setSidebarOpen(false);
+  };
+  useEffect(() => {
+    if (!fieldMetadataDirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [fieldMetadataDirty]);
 
   const refreshDatabase = useCallback(async () => {
     try {
@@ -108,8 +125,9 @@ export default function App() {
   useEffect(() => { if (mode === "semantic" || mode === "semanticTable") void refreshSemantic(); }, [mode, refreshSemantic]);
 
   const loadSemanticTable = async (name: string) => {
+    if (!canLeaveFields()) return;
     setSemanticBusy(true); setSemanticError(null);
-    try { setSemanticTable(await getSemanticTable(name)); setMode("semanticTable"); setSidebarOpen(false); }
+    try { setSemanticTable(await getSemanticTable(name)); setFieldMetadataDirty(false); setMode("semanticTable"); setSidebarOpen(false); }
     catch (error) { setSemanticError(error instanceof Error ? error.message : "无法读取字段语义"); }
     finally { setSemanticBusy(false); }
   };
@@ -137,9 +155,24 @@ export default function App() {
 
   const handleDraftUpdate = async (draft: SemanticDraft, patch: Partial<SemanticDraft>) => {
     setSemanticBusy(true); setSemanticError(null);
-    try { await updateSemanticDraft(draft.id, patch); setSemanticTable(await getSemanticTable(draft.table_name)); setSemanticValidation(null); await refreshSemantic(); }
-    catch (error) { setSemanticError(error instanceof Error ? error.message : "草稿保存失败"); }
+    try { await updateSemanticDraft(draft.id, patch); setSemanticTable(await getSemanticTable(draft.table_name)); setSemanticValidation(null); await refreshSemantic(); return true; }
+    catch (error) { setSemanticError(error instanceof Error ? error.message : "草稿保存失败"); return false; }
     finally { setSemanticBusy(false); }
+  };
+
+  const handleColumnsSave = async (columns: SemanticColumnPatch[]) => {
+    if (!semanticTable) return false;
+    setSemanticBusy(true); setSemanticError(null);
+    try {
+      setSemanticTable(await saveSemanticColumns(semanticTable.name, columns));
+      setFieldMetadataDirty(false);
+      setSemanticValidation(null);
+      await refreshSemantic();
+      return true;
+    } catch (error) {
+      setSemanticError(error instanceof Error ? error.message : "字段标注保存失败，请重试");
+      return false;
+    } finally { setSemanticBusy(false); }
   };
 
   const loadTable = useCallback(async (tableRef: string) => {
@@ -261,15 +294,17 @@ export default function App() {
   });
 
   const startUpload = () => {
+    if (importBusy || semanticBusy || !canLeaveFields()) return;
+    setFieldMetadataDirty(false);
     setMode("import");
     fileInputRef.current?.click();
   };
 
   return <div className="app-shell">
     <div className={`sidebar-backdrop ${sidebarOpen ? "is-visible" : ""}`} onClick={() => setSidebarOpen(false)} />
-    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} databases={database.databases} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={(nextMode) => { setMode(nextMode); setSidebarOpen(false); }} onSelectTable={loadTable} onImport={startUpload} duckdbStatus={duckdbStatus} duckdbBusy={duckdbBusy} onConnect={() => void handleDuckDBConnection("connect")} onDisconnect={() => void handleDuckDBConnection("disconnect")} /></div>
+    <div className={`sidebar-wrap ${sidebarOpen ? "is-open" : ""}`}><Sidebar databaseName={database.database} databases={database.databases} tables={database.tables} activeTable={activeTable} mode={mode} onModeChange={changeMode} onSelectTable={(name) => { if (canLeaveFields()) { setFieldMetadataDirty(false); void loadTable(name); } }} onImport={startUpload} duckdbStatus={duckdbStatus} duckdbBusy={duckdbBusy} onConnect={() => void handleDuckDBConnection("connect")} onDisconnect={() => void handleDuckDBConnection("disconnect")} /></div>
     <main className="workspace">
-      <Topbar mode={mode} onModeChange={setMode} tableName={activeTable} tableCount={database.tables.length} onUpload={startUpload} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
+      <Topbar mode={mode} onModeChange={changeMode} tableName={mode === "semanticTable" ? semanticTable?.name ?? null : mode === "semantic" ? null : activeTable} tableCount={database.tables.length} onUpload={startUpload} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
       <input ref={fileInputRef} id="upload-input" type="file" accept=".csv,.xlsx" className="visually-hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void beginPreview(file); event.target.value = ""; }} />
       {!mode.startsWith("semantic") && <div className="mode-tabs" role="tablist" aria-label="工作区视图">
         <button className={mode === "import" ? "is-active" : ""} onClick={() => setMode("import")} role="tab" aria-selected={mode === "import"}><Icon name="upload" size={14} /> 导入数据</button>
@@ -282,7 +317,7 @@ export default function App() {
         {mode === "browse" && <TableBrowser table={table} isLoading={tableLoading} error={tableError} onQuery={() => setMode("query")} />}
         {mode === "query" && <SqlWorkspace sql={sql} onSqlChange={setSql} onRun={() => void executeQuery()} isLoading={queryBusy} result={queryResult} error={queryError} tablesCount={database.tables.length} />}
         {mode === "semantic" && <SemanticOverview summary={semanticSummary} tables={semanticTables} validation={semanticValidation} isLoading={semanticLoading} isBusy={semanticBusy} error={semanticError} onScan={() => void handleScan()} onValidate={() => void handleValidate()} onPublish={() => void handlePublish()} onSelectTable={(name) => void loadSemanticTable(name)} />}
-        {mode === "semanticTable" && (semanticTable ? <SemanticTableDetail table={semanticTable} isBusy={semanticBusy} error={semanticError} onBack={() => setMode("semantic")} onUpdate={handleDraftUpdate} /> : <section className="surface-panel state-panel"><div className="state-icon"><Icon name="annotation" size={22} /></div><h2>选择一张数据表</h2><p>先进入语义目录并扫描数据，再选择表配置字段语义。</p><button type="button" className="primary-button state-action" onClick={() => setMode("semantic")}>打开语义目录</button></section>)}
+        {mode === "semanticTable" && (semanticTable ? <SemanticTableDetail key={semanticTable.name} table={semanticTable} isBusy={semanticBusy} error={semanticError} onBack={() => changeMode("semantic")} onUpdate={handleDraftUpdate} onSaveColumns={handleColumnsSave} onDirtyChange={setFieldMetadataDirty} /> : <section className="surface-panel state-panel"><div className="state-icon"><Icon name="annotation" size={22} /></div><h2>选择一张数据表</h2><p>进入语义目录，选择表配置字段元数据。</p><button type="button" className="primary-button state-action" onClick={() => changeMode("semantic")}>打开语义目录</button></section>)}
       </div>
       <footer className="workspace-footer"><span><span className="status-dot" /> AIBase 服务在线</span><span>远程工作区 · 数据保存在服务器</span></footer>
     </main>

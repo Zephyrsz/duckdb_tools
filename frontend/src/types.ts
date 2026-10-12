@@ -69,8 +69,20 @@ export type SemanticSummary = {
   published: Record<string, number>;
 };
 
-export type SemanticTableSummary = TableSummary & { draft_count: number; published: boolean };
-export type SemanticColumn = ColumnMeta & { null_count: number; distinct_count: number; sample_values: unknown[]; row_count: number; description: string; is_primary_key?: boolean };
+export type SemanticTableSummary = TableSummary & { draft_count: number; published: boolean; column_count: number; annotated_count: number };
+export type SemanticColumn = ColumnMeta & {
+  null_count: number;
+  distinct_count: number;
+  sample_values: unknown[];
+  row_count: number;
+  display_name: string;
+  description: string;
+  is_primary_key: boolean;
+  nullable: boolean;
+  status: SemanticDraft["status"];
+  draft_id: number | null;
+};
+export type SemanticColumnPatch = Pick<SemanticColumn, "name" | "display_name" | "description" | "is_primary_key" | "status">;
 export type SemanticTable = { name: string; row_count: number; columns: SemanticColumn[]; drafts: SemanticDraft[] };
 export type SemanticValidation = { valid: boolean; errors: string[]; warnings: string[]; counts: { drafts: number; approved: number } };
 export type SemanticPublish = { revision: number; counts: Record<string, number> };

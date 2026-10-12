@@ -134,6 +134,7 @@ class SemanticRepository:
             _ensure_column(connection, "dimensions", "dimension_type", "TEXT DEFAULT 'categorical'")
             _ensure_column(connection, "dimensions", "granularities", "TEXT")
             _ensure_column(connection, "dimensions", "filter_column", "TEXT")
+            _ensure_column(connection, "columns", "display_name", "TEXT NOT NULL DEFAULT ''")
             connection.commit()
         finally:
             connection.close()
@@ -141,25 +142,48 @@ class SemanticRepository:
     def replace_drafts(self, drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         connection = self.connect()
         try:
+            published_columns = {
+                (row["table_name"], row["name"]): dict(row)
+                for row in connection.execute("SELECT c.*, t.name AS table_name FROM columns c JOIN tables t ON c.table_id = t.id")
+            }
+            previous = {
+                (draft["object_type"], draft["table_name"], draft["source_column"]): draft
+                for draft in self._draft_rows(connection)
+            }
             connection.execute("DELETE FROM semantic_drafts")
             for draft in drafts:
-                connection.execute(
-                    """
-                    INSERT INTO semantic_drafts
-                    (object_type, table_name, source_column, canonical_name, display_name, description, expression, metadata_json, status, confidence, source, evidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
-                    """,
-                    (
-                        draft["object_type"], draft["table_name"], draft.get("source_column"), draft["canonical_name"],
-                        draft["display_name"], draft.get("description", ""), draft.get("expression"),
-                        json.dumps(draft.get("metadata", {}), ensure_ascii=False), draft.get("confidence", 0),
-                        draft.get("source", "auto_scan"), draft.get("evidence", ""),
-                    ),
-                )
+                existing = previous.get((draft["object_type"], draft["table_name"], draft.get("source_column")))
+                if existing:
+                    # Refresh profiling evidence while preserving edited text, approvals and IDs.
+                    draft = {**draft, **{key: existing[key] for key in (
+                        "id", "canonical_name", "display_name", "description", "expression", "status", "confidence", "source",
+                    )}, "metadata": {**existing["metadata"], **draft.get("metadata", {})}}
+                elif draft["object_type"] == "column":
+                    runtime = published_columns.get((draft["table_name"], draft.get("source_column")))
+                    if runtime:
+                        draft = {**draft, "display_name": runtime.get("display_name") or draft["display_name"],
+                                 "description": runtime.get("description") or "", "status": "approved",
+                                 "metadata": {**draft.get("metadata", {}), "is_primary_key": bool(runtime["is_primary_key"])}}
+                self._insert_draft(connection, draft)
             connection.commit()
             return self._draft_rows(connection)
         finally:
             connection.close()
+
+    @staticmethod
+    def _insert_draft(connection: sqlite3.Connection, draft: dict[str, Any]) -> None:
+        connection.execute(
+            """
+            INSERT INTO semantic_drafts
+            (id, object_type, table_name, source_column, canonical_name, display_name, description,
+             expression, metadata_json, status, confidence, source, evidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (draft.get("id"), draft["object_type"], draft["table_name"], draft.get("source_column"),
+             draft["canonical_name"], draft["display_name"], draft.get("description", ""), draft.get("expression"),
+             json.dumps(draft.get("metadata", {}), ensure_ascii=False), draft.get("status", "draft"),
+             draft.get("confidence", 0), draft.get("source", "auto_scan"), draft.get("evidence", "")),
+        )
 
     def _draft_rows(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
         rows = connection.execute("SELECT * FROM semantic_drafts ORDER BY table_name, object_type, id").fetchall()
@@ -193,7 +217,7 @@ class SemanticRepository:
             if not row:
                 return None
             assignments = ", ".join(f"{key} = ?" for key in values)
-            connection.execute(f"UPDATE semantic_drafts SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [*values.values(), draft_id])
+            connection.execute(f"UPDATE semantic_drafts SET {assignments}, source = 'manual', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [*values.values(), draft_id])
             connection.commit()
             return self._draft_row(connection.execute("SELECT * FROM semantic_drafts WHERE id = ?", (draft_id,)).fetchone())
         finally:
@@ -217,8 +241,11 @@ class SemanticRepository:
             for item in database_tables:
                 name = item["name"]
                 draft_count = connection.execute("SELECT COUNT(*) FROM semantic_drafts WHERE table_name = ?", (name,)).fetchone()[0]
+                annotated_count = connection.execute(
+                    "SELECT COUNT(DISTINCT source_column) FROM semantic_drafts WHERE table_name = ? AND object_type = 'column' AND (source = 'manual' OR status = 'approved')", (name,),
+                ).fetchone()[0]
                 published = connection.execute("SELECT 1 FROM tables WHERE name = ? AND active = TRUE", (name,)).fetchone() is not None
-                result.append({**item, "draft_count": draft_count, "published": published})
+                result.append({**item, "draft_count": draft_count, "annotated_count": annotated_count, "published": published})
             return result
         finally:
             connection.close()
@@ -227,9 +254,75 @@ class SemanticRepository:
         connection = self.connect()
         try:
             drafts = connection.execute("SELECT * FROM semantic_drafts WHERE table_name = ? ORDER BY id", (table_name,)).fetchall()
-            return {**profile, "drafts": [self._draft_row(row) for row in drafts]}
+            items = [self._draft_row(row) for row in drafts]
+            return {**profile, "columns": self._annotated_columns(connection, table_name, profile, items), "drafts": items}
         finally:
             connection.close()
+
+    def _annotated_columns(self, connection: sqlite3.Connection, table_name: str, profile: dict[str, Any], drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        column_drafts = {draft["source_column"]: draft for draft in drafts if draft["object_type"] == "column"}
+        published = {row["name"]: dict(row) for row in connection.execute(
+            "SELECT c.* FROM columns c JOIN tables t ON c.table_id = t.id WHERE t.name = ?", (table_name,),
+        )}
+        result = []
+        for column in profile["columns"]:
+            draft = column_drafts.get(column["name"])
+            runtime = published.get(column["name"], {})
+            metadata = draft["metadata"] if draft else {}
+            result.append({
+                **column,
+                "display_name": draft["display_name"] if draft else runtime.get("display_name") or humanize(column["name"]),
+                "description": draft["description"] if draft else runtime.get("description") or column.get("description", ""),
+                "is_primary_key": bool(metadata.get("is_primary_key", runtime.get("is_primary_key", column.get("is_primary_key", False)))),
+                "status": draft["status"] if draft else "approved" if runtime else "draft",
+                "draft_id": draft["id"] if draft else None,
+            })
+        return result
+
+    def update_columns(self, table_name: str, profile: dict[str, Any], patches: list[dict[str, Any]]) -> dict[str, Any]:
+        names = [patch["name"] for patch in patches]
+        known = {column["name"] for column in profile["columns"]}
+        if len(names) != len(set(names)):
+            raise ValueError("同一个字段不能重复提交")
+        if unknown := set(names) - known:
+            raise ValueError(f"字段不存在：{', '.join(sorted(unknown))}，请刷新表结构后重试")
+        if any(len(patch) == 1 for patch in patches):
+            raise ValueError("请提供要保存的字段元数据")
+        if any("display_name" in patch and not patch["display_name"].strip() for patch in patches):
+            raise ValueError("业务名称不能为空或仅包含空格")
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN")
+            items = [draft for draft in self._draft_rows(connection) if draft["table_name"] == table_name]
+            existing = {(draft["object_type"], draft["source_column"]) for draft in items}
+            current_columns = {column["name"]: column for column in self._annotated_columns(connection, table_name, profile, items)}
+            for draft in build_drafts([profile]):
+                if (draft["object_type"], draft.get("source_column")) not in existing:
+                    if draft["object_type"] == "column":
+                        column = current_columns[draft["source_column"]]
+                        if column["status"] == "approved":
+                            draft.update(display_name=column["display_name"], description=column["description"], status="approved")
+                        draft["metadata"]["is_primary_key"] = column["is_primary_key"]
+                    self._insert_draft(connection, draft)
+            for patch in patches:
+                row = connection.execute("SELECT * FROM semantic_drafts WHERE table_name = ? AND object_type = 'column' AND source_column = ?", (table_name, patch["name"])).fetchone()
+                draft = self._draft_row(row)
+                metadata = draft["metadata"]
+                if "is_primary_key" in patch:
+                    metadata["is_primary_key"] = patch["is_primary_key"]
+                connection.execute(
+                    """UPDATE semantic_drafts SET display_name = ?, description = ?, metadata_json = ?,
+                       status = ?, source = 'manual', updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                    (patch.get("display_name", draft["display_name"]), patch.get("description", draft["description"]),
+                     json.dumps(metadata, ensure_ascii=False), patch.get("status", draft["status"]), draft["id"]),
+                )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return self.table(table_name, profile)
 
     def validate(self, database_profiles: dict[str, dict[str, Any]]) -> dict[str, Any]:
         errors: list[str] = []
@@ -237,12 +330,12 @@ class SemanticRepository:
         drafts = self.drafts()
         names: set[tuple[str, str]] = set()
         for draft in drafts:
-            key = (draft["object_type"], draft["canonical_name"])
-            if key in names and draft["status"] != "rejected":
-                errors.append(f"duplicate canonical name: {draft['canonical_name']}")
-            names.add(key)
             if draft["status"] == "rejected":
                 continue
+            key = (draft["object_type"], draft["canonical_name"])
+            if key in names:
+                errors.append(f"duplicate canonical name: {draft['canonical_name']}")
+            names.add(key)
             profile = database_profiles.get(draft["table_name"])
             if profile is None:
                 errors.append(f"unknown table: {draft['table_name']}")
@@ -259,7 +352,7 @@ class SemanticRepository:
                     errors.append(f"unknown expression reference: {table}.{column}")
             if draft["status"] != "approved":
                 warnings.append(f"pending approval: {draft['canonical_name']}")
-        return {"valid": not errors and all(draft["status"] == "approved" for draft in drafts), "errors": errors, "warnings": warnings, "counts": {"drafts": len(drafts), "approved": sum(item["status"] == "approved" for item in drafts)}}
+        return {"valid": not errors and not warnings, "errors": errors, "warnings": warnings, "counts": {"drafts": len(drafts), "approved": sum(item["status"] == "approved" for item in drafts)}}
 
     def publish(self, database_profiles: dict[str, dict[str, Any]]) -> dict[str, Any]:
         validation = self.validate(database_profiles)
@@ -268,7 +361,7 @@ class SemanticRepository:
         connection = self.connect()
         try:
             connection.execute("BEGIN")
-            drafts = self._draft_rows(connection)
+            drafts = [draft for draft in self._draft_rows(connection) if draft["status"] == "approved"]
             for draft in drafts:
                 if draft["object_type"] != "table":
                     continue
@@ -282,11 +375,18 @@ class SemanticRepository:
                     (draft["canonical_name"], draft["description"], json.dumps([], ensure_ascii=False), f"one row per record in {draft['table_name']}", json.dumps([], ensure_ascii=False)),
                 )
                 table_id = connection.execute("SELECT id FROM tables WHERE name = ?", (draft["canonical_name"],)).fetchone()[0]
-                connection.execute("DELETE FROM columns WHERE table_id = ?", (table_id,))
-                for column in profile["columns"]:
+                annotated = self._annotated_columns(connection, draft["table_name"], profile, [item for item in drafts if item["table_name"] == draft["table_name"]])
+                column_names = [column["name"] for column in annotated]
+                placeholders = ", ".join("?" for _ in column_names)
+                connection.execute(f"DELETE FROM columns WHERE table_id = ? AND name NOT IN ({placeholders})", (table_id, *column_names))
+                for column in annotated:
                     connection.execute(
-                        "INSERT INTO columns (table_id, name, type, description, is_primary_key, nullable) VALUES (?, ?, ?, ?, ?, ?)",
-                        (table_id, column["name"], column["type"], column.get("description", ""), column.get("is_primary_key", False), column.get("null_count", 0) > 0),
+                        """INSERT INTO columns (table_id, name, type, display_name, description, is_primary_key, nullable)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(table_id, name) DO UPDATE SET type=excluded.type,
+                           display_name=excluded.display_name, description=excluded.description,
+                           is_primary_key=excluded.is_primary_key, nullable=excluded.nullable""",
+                        (table_id, column["name"], column["type"], column["display_name"], column["description"], column["is_primary_key"], column.get("nullable", True)),
                     )
             for draft in drafts:
                 if draft["object_type"] == "measure":
@@ -362,7 +462,7 @@ def profile_database(connection: duckdb.DuckDBPyConnection) -> list[dict[str, An
             distinct_count = int(connection.execute(f"SELECT COUNT(DISTINCT {quote_identifier(name)}) FROM {qualified_table}").fetchone()[0])
             samples = [json_value(item[0]) for item in connection.execute(f"SELECT DISTINCT {quote_identifier(name)} FROM {qualified_table} WHERE {quote_identifier(name)} IS NOT NULL LIMIT 5").fetchall()]
             row_count = int(connection.execute(f"SELECT COUNT(*) FROM {qualified_table}").fetchone()[0])
-            columns.append({"name": name, "type": type_name, "null_count": null_count, "distinct_count": distinct_count, "sample_values": samples, "row_count": row_count, "description": ""})
+            columns.append({"name": name, "type": type_name, "nullable": row[2] == "YES", "is_primary_key": row[3] == "PRI", "null_count": null_count, "distinct_count": distinct_count, "sample_values": samples, "row_count": row_count, "description": ""})
         profiles.append({"name": table_name, "database_name": schema_name, "raw_name": raw_table_name, "row_count": int(connection.execute(f"SELECT COUNT(*) FROM {qualified_table}").fetchone()[0]), "columns": columns})
     return profiles
 
@@ -379,11 +479,11 @@ def build_drafts(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if is_id and column["null_count"] == 0:
                 drafts.append({"object_type": "entity", "table_name": table, "source_column": name, "canonical_name": table.rstrip("s"), "display_name": humanize(table.rstrip("s")), "description": f"Entity identified by {name}", "confidence": 0.92, "evidence": "non-null identifier-like column", "metadata": {"sample_values": column["sample_values"]}})
             base = {"table_name": table, "source_column": name, "display_name": humanize(name), "description": f"Auto-scanned field {table}.{name}", "metadata": {"sample_values": column["sample_values"], "distinct_count": column["distinct_count"], "row_count": column["row_count"]}}
+            drafts.append({**base, "object_type": "column", "canonical_name": f"{table}_{name}", "confidence": 1.0, "evidence": "DESCRIBE column metadata"})
             if any(token in lower for token in ("at", "date", "time")) and any(token in column["type"].upper() for token in ("DATE", "TIME")):
                 continue
             if column["type"].upper().split("(")[0] in NUMERIC_TYPES and (column["distinct_count"] > 20 or any(word in lower for word in MEASURE_WORDS)):
                 drafts.append({**base, "object_type": "measure", "canonical_name": name, "expression": f"SUM({table}.{name})", "confidence": 0.88, "evidence": f"numeric type {column['type']} and measure-like name or cardinality"})
             elif column["type"].upper() in {"VARCHAR", "TEXT", "BOOLEAN"} and column["distinct_count"] <= 50:
                 drafts.append({**base, "object_type": "dimension", "canonical_name": name, "confidence": 0.86, "evidence": f"categorical type with {column['distinct_count']} distinct values"})
-            drafts.append({**base, "object_type": "column", "canonical_name": f"{table}_{name}", "confidence": 1.0, "evidence": "DESCRIBE column metadata"})
     return drafts

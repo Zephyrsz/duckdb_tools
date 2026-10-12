@@ -12,6 +12,7 @@ import type {
   SemanticTableSummary,
   SemanticValidation,
   DuckDBStatus,
+  SemanticColumnPatch,
 } from "./types";
 
 const API_ROOT = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
@@ -20,7 +21,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_ROOT}${path}`, init);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.detail ?? `请求失败（${response.status}）`);
+    const detail = body.detail;
+    const message = typeof detail === "string" ? detail : Array.isArray(detail)
+      ? detail.map((issue: { loc?: (string | number)[]; msg?: string }) => `${issue.loc?.slice(1).join(".") ?? "字段"}：${issue.msg ?? "内容无效"}`).join("；")
+      : `请求失败（${response.status}）`;
+    throw new Error(message);
   }
   return body as T;
 }
@@ -120,6 +125,14 @@ export function getSemanticTables(): Promise<SemanticTableSummary[]> {
 
 export function getSemanticTable(tableName: string): Promise<SemanticTable> {
   return request<SemanticTable>(`/semantic/tables/${encodeURIComponent(tableName)}`);
+}
+
+export function saveSemanticColumns(tableName: string, columns: SemanticColumnPatch[]): Promise<SemanticTable> {
+  return request<SemanticTable>(`/semantic/tables/${encodeURIComponent(tableName)}/columns`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ columns }),
+  });
 }
 
 export function scanSemantic(): Promise<{ table_count: number; draft_count: number; drafts: SemanticDraft[] }> {
