@@ -1,0 +1,13 @@
+duckdb==1.5.5
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+langgraph>=0.2,<2
+langchain-openai>=0.2,<2
+sqlparse>=0.5,<1
+sqlglot>=23,<31
+pandas>=2,<4
+pyyaml>=6,<7
+structlog>=24,<27
+python-dotenv>=1,<2
+pytest>=8,<10
+httpx>=0.27,<1

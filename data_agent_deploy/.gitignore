@@ -1,0 +1,14 @@
+.venv/
+.env
+*.log
+.run/
+__pycache__/
+.pytest_cache/
+openmuse/node_modules/
+openmuse/**/node_modules/
+openmuse/.env
+openmuse/**/.env
+openmuse/.openmuse/
+openmuse/dist/
+openmuse/apps/mobile/dist/
+openmuse/apps/mobile/.expo/

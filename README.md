@@ -67,6 +67,15 @@ export RDS_AGENT_METADATA_DB=/Users/rgwei/pj/pj_data/rds_agent/var/metadata.db
 
 完整部署、启动、验证和故障排查见 [`docs/guides/deployment.md`](docs/guides/deployment.md)。
 
+## OpenMuse 数据助手
+
+[`data_agent_deploy/`](data_agent_deploy/README.md) 提供独立的 OpenMuse 客户端和 RDS HTTP 适配服务。模型使用已发布的指标、维度发起结构化查询，由 RDS 编译并校验 SQL，再以 `read_only=True` 连接同一份 DuckDB；首版权限控制依靠只读连接，ACL 后续完善。
+
+- [依赖、版本与外部服务](data_agent_deploy/docs/guides/dependencies.md)
+- [完整安装、配置、部署与故障排查](data_agent_deploy/docs/guides/deployment.md)
+
+工作台的数据导入与语义发布仍按上面的流程执行。OpenMuse 使用独立 Python 环境和 pnpm 工作区；两者的启动脚本、配置和前端构建产物不能混用。
+
 ## 测试
 
 ```bash
